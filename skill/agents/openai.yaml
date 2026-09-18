@@ -1,0 +1,4 @@
+interface:
+  display_name: "TrashCompact"
+  short_description: "Prune status noise and repeated context from a session transcript with Jev"
+  default_prompt: "Use $trashcompact to prune this transcript down to entries that carry durable working knowledge."
