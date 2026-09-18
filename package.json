@@ -1,0 +1,36 @@
+{
+  "name": "trashcompact",
+  "version": "0.1.0",
+  "description": "Take the trash out of your Claude Code context. Scores every transcript entry for durable working knowledge with TypeSafe's Jev, drops the noise, and steers compaction with what is left.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "trashcompact": "bin/trashcompact"
+  },
+  "scripts": {
+    "postinstall": "chmod +x bin/trashcompact bin/trashcompact-hook 2>/dev/null || true",
+    "self-test": "./bin/trashcompact --self-test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "keywords": [
+    "claude-code",
+    "context",
+    "compaction",
+    "transcript",
+    "typesafe",
+    "jev"
+  ],
+  "files": [
+    "bin",
+    "src",
+    "hooks",
+    "skill",
+    "install",
+    "install.sh"
+  ]
+}

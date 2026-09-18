@@ -1,0 +1,33 @@
+#!/bin/sh
+# Hook dispatcher. Claude Code runs this; it resolves node the same way the CLI does.
+# Usage: trashcompact-hook stop | precompact
+set -eu
+
+SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
+ROOT=$(cd "$(dirname "$SELF")/.." && pwd)
+
+case "${1:-}" in
+  stop)       SCRIPT="$ROOT/hooks/on-stop.mjs" ;;
+  precompact) SCRIPT="$ROOT/hooks/on-precompact.mjs" ;;
+  *) echo "usage: trashcompact-hook stop|precompact" >&2; exit 2 ;;
+esac
+
+ENV_FILE="${TRASHCOMPACT_ENV:-$HOME/.config/typesafe/env}"
+if [ -z "${TYPESAFE_API_KEY:-}" ] && [ -r "$ENV_FILE" ]; then
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
+
+if command -v node >/dev/null 2>&1; then
+  NODE=node
+elif [ -x "$HOME/.local/share/fnm/aliases/default/bin/node" ]; then
+  NODE="$HOME/.local/share/fnm/aliases/default/bin/node"
+elif [ -x "$HOME/.nvm/alias/default/bin/node" ]; then
+  NODE="$HOME/.nvm/alias/default/bin/node"
+else
+  # No node: stay silent rather than breaking the user's turn.
+  exit 0
+fi
+
+exec "$NODE" "$SCRIPT"

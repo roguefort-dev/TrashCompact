@@ -1,0 +1,15 @@
+node_modules/
+package-lock.json
+
+# Never commit credentials or anything that could carry one.
+.env
+.env.*
+*.key
+env
+secrets*
+
+# Local scoring state and scratch output.
+state/
+*.jsonl
+!example/*.jsonl
+*.tmp
