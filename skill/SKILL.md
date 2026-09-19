@@ -5,14 +5,14 @@ description: Install TrashCompact for your harness, inspect explicit transcripts
 
 # TrashCompact
 
-For installation, read `docs/SETUP.md` in the TrashCompact checkout and follow its target-specific instructions. Use `bash install.sh --target codex|claude|opencode|opencode2 --non-interactive` with the confirmed target. Give the human an absolute `bash /path/to/install/key.sh` command for private terminal entry; never request, read, or handle the API key in chat. Complete any required human trust review for the selected integration. Restart/reopen the application after setup. Preserve existing settings and dirty checkouts.
+For installation, read `docs/SETUP.md` in the TrashCompact checkout and follow its target-specific instructions. Use `node install.mjs --target codex|claude|opencode|opencode2 --non-interactive` with the confirmed target. Give the human an absolute `node /path/to/install/key.mjs` command for private terminal entry; never request, read, or handle the API key in chat. Complete any required human trust review for the selected integration. Restart/reopen the application after setup. Preserve existing settings and dirty checkouts.
 
 Use the repository CLI to inspect an explicitly selected transcript in a supported format, score eligible assistant prose, or create an offline recovery note. Locate the installed TrashCompact checkout before running its commands; do not assume the user's current project contains the executable.
 
 ```bash
-./bin/trashcompact <rollout.jsonl> --format codex --plan
-./bin/trashcompact <rollout.jsonl> --format codex --update
-./bin/trashcompact <rollout.jsonl> --format codex --recovery
+node bin/launch.mjs <rollout.jsonl> --format codex --plan
+node bin/launch.mjs <rollout.jsonl> --format codex --update
+node bin/launch.mjs <rollout.jsonl> --format codex --recovery
 ```
 
 `--plan` and `--recovery` are offline. Online scoring sends eligible transcript text to TypeSafe; use the user's existing authorization for that transcript.

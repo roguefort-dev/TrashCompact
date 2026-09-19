@@ -5,12 +5,11 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "trashcompact": "bin/trashcompact"
+    "trashcompact": "bin/launch.mjs"
   },
   "scripts": {
-    "postinstall": "chmod +x bin/trashcompact bin/trashcompact-hook 2>/dev/null || true",
-    "self-test": "./bin/trashcompact --self-test",
-    "test": "node --test test/*.test.mjs"
+    "self-test": "node bin/launch.mjs --self-test",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
@@ -42,6 +41,7 @@
     "opencode/install.mjs",
     "opencode/plugin.mjs",
     "docs",
-    "example/codex-review.jsonl"
+    "example/codex-review.jsonl",
+    "install.mjs"
   ]
 }

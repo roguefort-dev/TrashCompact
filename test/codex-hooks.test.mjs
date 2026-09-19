@@ -14,7 +14,7 @@ function fixture(t) {
   mkdirSync(join(dir, 'bin'));
   const transcript = join(dir, 'rollout.jsonl');
   writeFileSync(transcript, '{"type":"session_meta"}\n');
-  const launcher = join(dir, 'bin/trashcompact');
+  const launcher = join(dir, 'bin/launch.mjs');
   const log = join(dir, 'args.json');
   const stub = (output = note, code = 0) => writeFileSync(launcher,
     `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(${JSON.stringify(output)});\nprocess.exit(${code});\n`, { mode: 0o700 });
@@ -122,7 +122,7 @@ test('duplicate boundary with invalid or failing changed flags invalidates the p
 test('PreCompact runs one synchronous online pre-pass then offline ranked recovery, including online failure fallback', t => {
   for (const failOnline of [false,true]) {
     const f=fixture(t), audit=join(f.dir,'ordered.jsonl');
-    writeFileSync(join(f.dir,'bin/trashcompact'),`#!${process.execPath}\nimport {appendFileSync} from 'node:fs';const args=process.argv.slice(2);appendFileSync(${JSON.stringify(audit)},JSON.stringify(args)+'\\n');if(args.includes('--update')){process.exit(${failOnline?1:0});}process.stdout.write(${JSON.stringify(note)});`,{mode:0o700});
+    writeFileSync(join(f.dir,'bin/launch.mjs'),`#!${process.execPath}\nimport {appendFileSync} from 'node:fs';const args=process.argv.slice(2);appendFileSync(${JSON.stringify(audit)},JSON.stringify(args)+'\\n');if(args.includes('--update')){process.exit(${failOnline?1:0});}process.stdout.write(${JSON.stringify(note)});`,{mode:0o700});
     assert.equal(f.run('precompact'), '');
     const calls=readFileSync(audit,'utf8').trim().split('\n').map(JSON.parse);
     assert.deepEqual(calls,[

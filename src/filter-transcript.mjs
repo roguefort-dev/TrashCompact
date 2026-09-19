@@ -15,8 +15,9 @@
 // Incremental mode reuses verdicts only when content and judging configuration match.
 // Long entries and uncertain or invalid verdicts are retained conservatively.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, statSync, renameSync, rmSync } from "node:fs";
-import { dirname, basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, basename, resolve, join } from "node:path";
+import { homedir } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import process from "node:process";
 import { CATEGORY, POLICY, classify, applyPolicies, liveWindowStart } from "./classify.mjs";
@@ -28,8 +29,8 @@ import { pruneToolExchanges } from "./static-tools.mjs";
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SDK_CANDIDATES = [
   "@typesafe-ai/sdk",
-  `${REPO_ROOT}/node_modules/@typesafe-ai/sdk/dist/index.mjs`,
-  `${process.env.HOME}/.local/share/typesafe-cli/node_modules/@typesafe-ai/sdk/dist/index.mjs`,
+  pathToFileURL(join(REPO_ROOT, "node_modules/@typesafe-ai/sdk/dist/index.mjs")).href,
+  pathToFileURL(join(process.env.HOME || homedir(), ".local/share/typesafe-cli/node_modules/@typesafe-ai/sdk/dist/index.mjs")).href,
 ];
 
 async function loadSdk() {
@@ -63,7 +64,7 @@ const DEFAULTS = {
   threshold: 0.75, minConfidence: 0.55,
 };
 
-const STATE_HOME = `${process.env.CODEX_HOME || `${process.env.HOME}/.codex`}/trashcompact`;
+const STATE_HOME = join(process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex"), "trashcompact");
 const PRECOMPACT_BUDGET = 6000;
 
 // Pass 2 (redundancy) is retired: it asked "does a later entry say the same thing?"

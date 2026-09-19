@@ -65,15 +65,22 @@ async function atomicState(path, value) {
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
 }
-export function runCli(args, timeoutMs = 25000, launcher = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bin', 'trashcompact')) {
+export function runCli(args, timeoutMs = 25000, launcher = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bin', 'launch.mjs')) {
   return new Promise(resolve => {
-    const child = spawn(launcher, args, { stdio: ['ignore', 'pipe', 'ignore'], detached: process.platform !== 'win32' });
+    const child = spawn(process.execPath, [launcher, ...args], { stdio: ['ignore', 'pipe', 'ignore'], detached: process.platform !== 'win32' });
     const chunks = []; let bytes = 0, failed = false;
     let forceKill;
     const terminate = () => {
       failed = true;
       const signal = name => {
-        try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid,name); else child.kill(name); } catch {}
+        try {
+          if (process.platform === 'win32' && child.pid) {
+            // The launcher has a filter child; kill the whole tree at the deadline.
+            const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+            killer.on('error', () => { try { child.kill(name); } catch {} });
+          } else if (child.pid) process.kill(-child.pid, name);
+          else child.kill(name);
+        } catch {}
       };
       signal('SIGTERM');
       forceKill ??= setTimeout(() => { signal('SIGKILL'); resolve(null); },1000);
@@ -102,7 +109,7 @@ export async function runHook(mode, { format = 'codex' } = {}) {
     if (!input || input.agent_id != null || typeof input.session_id !== 'string' || !input.session_id.trim()) return;
     if (mode === 'sessionstart' && input.source !== 'compact') return;
     if (mode === 'stop' && input.stop_hook_active) return;
-    const stateHome = format === 'claude' ? join(homedir(), '.claude', 'trashcompact') : join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'trashcompact');
+    const stateHome = format === 'claude' ? join(process.env.HOME || homedir(), '.claude', 'trashcompact') : join(process.env.CODEX_HOME || join(process.env.HOME || homedir(), '.codex'), 'trashcompact');
     const stateFlags = transcript => format === 'claude' ? ['--state', join(stateHome, `${digest(transcript)}.json`)] : [];
     if (mode === 'stop') {
       if (typeof input.transcript_path !== 'string' || !input.transcript_path.trim()) return;

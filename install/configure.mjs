@@ -5,6 +5,8 @@
 // read, preserved, and written back untouched. Validate and write atomically
 // so unrelated hook configuration remains intact.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, statSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir } from 'node:os';
+import { hookInvocation } from './platform.mjs';
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +14,8 @@ import { installerArgs } from './args.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const { target, remove } = installerArgs(process.argv.slice(2), ['codex', 'claude']);
-const SETTINGS = target === 'claude' ? join(process.env.HOME, '.claude', 'settings.json') : join(process.env.CODEX_HOME || join(process.env.HOME, ".codex"), "hooks.json");
+const home = process.env.HOME || homedir();
+const SETTINGS = target === 'claude' ? join(home, '.claude', 'settings.json') : join(process.env.CODEX_HOME || join(home, ".codex"), "hooks.json");
 const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 
 
@@ -55,6 +58,10 @@ if (target === 'claude') {
   }
 }
 
+for (const [event, entry] of Object.entries(entries)) {
+  Object.assign(entry.hooks[0], hookInvocation(ROOT, target, event.toLowerCase()));
+}
+
 // Exact commands from this installation only; a substring is not ownership.
 const owned = new Set(Object.values(entries).map(entry => entry.hooks[0].command));
 for (const [mode, script] of [['stop', 'on-stop.mjs'], ['precompact', 'on-precompact.mjs'], ['sessionstart', 'on-sessionstart.mjs']]) {
@@ -67,7 +74,12 @@ for (const [mode, script] of [['stop', 'on-stop.mjs'], ['precompact', 'on-precom
     owned.add(`node ${quote(path)}`);
   }
 }
-const isOurs = hook => hook?.type === 'command' && owned.has(hook.command);
+const isOurs = hook => hook?.type === 'command' && (
+  Object.values(entries).some(entry => {
+    const expected = entry.hooks[0];
+    return hook.command === expected.command && JSON.stringify(hook.args) === JSON.stringify(expected.args) && hook.commandWindows === expected.commandWindows;
+  }) || (!Object.hasOwn(hook, 'args') && !Object.hasOwn(hook, 'commandWindows') && owned.has(hook.command) && hook.command !== process.execPath)
+);
 
 if (remove && !existsSync(SETTINGS)) process.exit(0);
 let settings = {};

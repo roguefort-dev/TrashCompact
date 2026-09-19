@@ -5,11 +5,16 @@ import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { powershellInvocation } from '../install/platform.mjs';
 
 export async function checkCompatibility(target, env = process.env) {
   if (!['opencode', 'opencode2'].includes(target)) throw new Error('Target must be opencode or opencode2');
   let version;
-  try { version = (await promisify(execFile)(target, ['--version'], { env, timeout: 10000 })).stdout.trim(); }
+  try {
+    const executable = process.platform === 'win32' ? 'powershell.exe' : target;
+    const args = process.platform === 'win32' ? powershellInvocation(target, ['--version']) : ['--version'];
+    version = (await promisify(execFile)(executable, args, { env, timeout: 10000 })).stdout.trim();
+  }
   catch { return { verified: false, reason: `${target} version could not be checked; restart a compatible OpenCode release after installation.` }; }
   if (version.includes('0.0.0-beta-19157')) throw new Error('OpenCode beta-19157 loads plugins but does not invoke the compaction hook. Install a current OpenCode 2 release (the plugin targets the 2.0.10 contract) before enabling TrashCompact.');
   const match = version.match(/(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:$|\s)/);

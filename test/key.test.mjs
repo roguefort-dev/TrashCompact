@@ -13,19 +13,19 @@ test('private key writer replaces duplicate literal assignments atomically witho
   const secret = 'synthetic-key_123'; const success = run(secret);
   assert.equal(success.status, 0); assert.ok(!success.stdout.includes(secret)); assert.ok(!success.stderr.includes(secret));
   assert.equal(readFileSync(path, 'utf8'), `OTHER=keep\nTYPESAFE_API_KEY=${secret}\n`);
-  assert.equal(statSync(path).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(statSync(path).mode & 0o777, 0o600);
   for (const bad of ['a b', 'a\nb', 'a$b', 'a;b', 'a`b', 'a"b', "a'b", 'a\\b', 'a\0b']) {
     const result = run(bad); assert.notEqual(result.status, 0); assert.ok(!result.stderr.includes(bad));
     assert.equal(readFileSync(path, 'utf8'), `OTHER=keep\nTYPESAFE_API_KEY=${secret}\n`);
   }
 });
-test('key command refuses argv secrets and piped stdin without a controlling terminal', () => {
+test('key command refuses argv secrets and piped stdin without a controlling terminal', { skip: process.platform === 'win32' }, () => {
   const result = spawnSync('/bin/bash', [join(root, 'install/key.sh'), 'SYNTHETIC_SECRET'], { encoding: 'utf8' });
   assert.equal(result.status, 2); assert.ok(!result.stderr.includes('SYNTHETIC_SECRET'));
   const noTTY = spawnSync('/bin/bash', [join(root, 'install/key.sh')], { input: 'SYNTHETIC_SECRET\n', detached: true, encoding: 'utf8' });
   assert.equal(noTTY.status, 1); assert.match(noTTY.stderr, /interactive terminal/);
 });
-test('hidden terminal key entry does not echo the key even under shell tracing', t => {
+test('hidden terminal key entry does not echo the key even under shell tracing', { skip: process.platform === 'win32' }, t => {
   const home = mkdtempSync(join(tmpdir(), 'trashcompact-key-tty-')); t.after(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, 'env');
   const script = `import os,pty,select,time,sys

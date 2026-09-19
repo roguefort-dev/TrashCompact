@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { homedir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -8,7 +9,7 @@ const args = process.argv.slice(2);
 const offline = args.some(arg => ['--offline', '--precompact', '--plan', '--recovery'].includes(arg));
 try {
   if (!offline && !process.env.TYPESAFE_API_KEY) {
-    const path = process.env.TRASHCOMPACT_ENV || join(process.env.HOME || '', '.config/typesafe/env');
+    const path = process.env.TRASHCOMPACT_ENV || join(process.env.HOME || homedir(), '.config/typesafe/env');
     let raw = '';
     try { raw = readFileSync(path, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     // Accept one literal assignment, optionally quoted. Never source shell code.

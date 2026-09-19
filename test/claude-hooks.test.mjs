@@ -31,7 +31,7 @@ test('Claude lifecycle uses isolated caches, remains quiet and delivers recovery
 });
 test('Claude Stop always uses Claude format and a separate state path', t => {
   const f = fixture(t), audit = join(f.home, 'args.json');
-  writeFileSync(join(f.home, 'bin/trashcompact'), `#!${process.execPath}\nimport{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(audit)},JSON.stringify(process.argv.slice(2)));`, { mode: 0o700 });
+  writeFileSync(join(f.home, 'bin/launch.mjs'), `#!${process.execPath}\nimport{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(audit)},JSON.stringify(process.argv.slice(2)));`, { mode: 0o700 });
   assert.equal(f.run('stop').status, 0);
   assert.deepEqual(JSON.parse(readFileSync(audit)), [f.transcript, '--state', join(f.home, '.claude/trashcompact', createHash('sha256').update(f.transcript).digest('hex') + '.json'), '--format', 'claude', '--update']);
 });

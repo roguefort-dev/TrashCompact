@@ -4,7 +4,7 @@ TrashCompact filters transcripts and selects compaction evidence for your harnes
 
 ## How it works
 
-1. Static rules remove [recognized noise](docs/CLI.md#retention-and-cache-behavior). Recognized failed tool exchanges expire two human turns after their result. Recognized Node test output keeps final totals and failures instead of individual passing-test lines. User messages are protected, with the last 5 records protected from general pruning and Jev scoring. Deterministic tool cleanup can bypass that tail.
+1. Static rules remove context bloat without added value for reasoning and problem solving efforts. Recognized failed tool exchanges expire after two user turns. Recognized Node test output keeps final totals and failures instead of individual passing-test lines. User messages are protected, with the last 5 records protected from general pruning and Jev scoring. Deterministic tool cleanup can bypass that tail.
 2. Jev scores eligible standalone assistant prose. Low scores permit removal only when confidence meets the configured threshold. Jev cannot remove oversized, unscored, mixed, or unknown entries.
 3. At compaction, Jev also ranks bounded passages for a recovery note of up to 6,000 UTF-8 bytes.
 
@@ -25,7 +25,7 @@ Codex and Claude Code receive the recovery note after compaction. OpenCode adds 
 
 ## Ask your agent to install
 
-Copy the block for your application into its chat. Setup requires Linux or macOS, Node.js 20+, Bash, Git, npm, and a TypeSafe API key. Windows is unsupported.
+Copy the block for your application into its chat. Setup supports Windows, Linux, and macOS with Node.js 20+, Git, npm, and a TypeSafe API key. On Windows, use PowerShell.
 
 ### Claude Code
 

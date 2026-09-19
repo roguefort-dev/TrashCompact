@@ -90,7 +90,7 @@ test('target skill links are isolated and unsupported helper flags are rejected'
 });
 test('installer help and argument validation precede dependency installation', () => {
   for (const [args, code] of [[['--help'], 0], [['--unknown'], 2], [['--target', 'unknown'], 2]]) {
-    const result = spawnSync('/bin/bash', [join(root, 'install.sh'), ...args], { encoding: 'utf8', env: { PATH: '/nonexistent' } });
+    const result = spawnSync(process.execPath, [join(root, 'install.mjs'), ...args], { encoding: 'utf8', env: { PATH: '/nonexistent' } });
     assert.equal(result.status, code);
   }
 });

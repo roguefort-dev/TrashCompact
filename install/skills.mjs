@@ -1,13 +1,15 @@
 // Manage only symlinks to this checkout. Existing real directories are user data.
 import { lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installerArgs } from './args.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const target = join(root, 'skill');
 const { target: client, remove } = installerArgs(process.argv.slice(2));
-const configHome = process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config');
-const bases = client === 'codex' ? [join(process.env.HOME, '.agents'), process.env.CODEX_HOME || join(process.env.HOME, '.codex')] : client === 'claude' ? [join(process.env.HOME, '.claude')] : [join(configHome, "opencode")];
+const home = process.env.HOME || homedir();
+const configHome = process.env.XDG_CONFIG_HOME || join(home, '.config');
+const bases = client === 'codex' ? [join(home, '.agents'), process.env.CODEX_HOME || join(home, '.codex')] : client === 'claude' ? [join(home, '.claude')] : [join(configHome, "opencode")];
 for (const base of new Set(bases)) {
   const parent = join(base, 'skills');
   const destination = join(parent, 'trashcompact');
@@ -24,5 +26,5 @@ for (const base of new Set(bases)) {
     continue;
   }
   mkdirSync(parent, { recursive: true });
-  symlinkSync(target, destination);
+  symlinkSync(target, destination, process.platform === 'win32' ? 'junction' : 'dir');
 }
