@@ -74,7 +74,7 @@ npm run self-test
 
 It tests connectivity and scoring, not hook delivery or recall. Do not process real chats as installation tests or expose credentials during diagnosis. Installation leaves existing task history intact.
 
-Testing in an authorized Codex desktop task verified native compaction, recovery delivery and cache reset through SessionStart, automatic Stop scoring, and cache reuse without additional requests. Immediate PostCompact execution was not verified in that already-loaded task; the command passed an isolated check using copies of the same transcript and cache. This live verification applies to Codex on Linux.
+Testing in authorized Codex desktop tasks verified immediate PostCompact cache reset after native compaction while preserving the recovery note, before another user turn. It also verified SessionStart recovery delivery and fallback reset, automatic Stop scoring, and cache reuse without additional requests. This live verification applies to Codex 0.154.0 on Linux.
 
 ## Remove
 
