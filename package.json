@@ -1,7 +1,7 @@
 {
   "name": "trashcompact",
   "version": "0.1.0",
-  "description": "Preserve useful context across Claude Code, Codex, and OpenCode compaction with TypeSafe's Jev and bounded evidence recovery.",
+  "description": "Preserve useful context across compaction in your harness with TypeSafe's Jev and bounded evidence recovery.",
   "type": "module",
   "license": "MIT",
   "bin": {

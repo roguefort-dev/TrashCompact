@@ -1,14 +1,18 @@
 # TrashCompact
 
-TrashCompact filters transcripts and selects compaction evidence using TypeSafe's Jev for Claude Code, Codex, and compatible OpenCode versions.
+TrashCompact filters transcripts and selects compaction evidence for your harness using TypeSafe's Jev. See the supported integrations below.
 
 ## How it works
 
-1. Before Jev scoring, static rules remove known local metadata, empty records, adjacent exact assistant repetitions, and complete tool call/result pairs for successful empty no-ops or exact repeated reads. User messages, failed tools, and the last 20 records are protected.
+1. Static rules remove [recognized noise](docs/CLI.md#retention-and-cache-behavior). Recognized failed tool exchanges expire two human turns after their result. Recognized Node test output keeps final totals and failures instead of individual passing-test lines. User messages are protected, with the last 5 records protected from general pruning and Jev scoring. Deterministic tool cleanup can bypass that tail.
 2. Jev scores eligible standalone assistant prose. Low scores permit removal only when confidence meets the configured threshold. Jev cannot remove oversized, unscored, mixed, or unknown entries.
-3. At compaction, Jev also ranks bounded passages for a recovery note of up to 6,000 UTF-8 bytes. Tool-passage ranking is supported for Codex and OpenCode. Claude tool results remain local recovery evidence.
+3. At compaction, Jev also ranks bounded passages for a recovery note of up to 6,000 UTF-8 bytes.
 
-These removals affect filtered exports and recovery selection. The integrations leave live history and the native summarizer's transcript intact. Codex and Claude receive the recovery note after compaction. OpenCode adds it to the summarizer's prompt.
+These removals affect filtered exports and recovery selection. The integrations leave live history and the native summarizer's transcript intact.
+
+Failed scoring can fall back to cached judgments and unscored evidence. Recovery is incomplete. No real-task recall gain is established. See [compatibility and verification](docs/SETUP.md) for test coverage.
+
+## Supported integrations
 
 | Application | Integration |
 |---|---|
@@ -17,7 +21,7 @@ These removals affect filtered exports and recovery selection. The integrations 
 | OpenCode v1 | Adds evidence through `experimental.session.compacting`. Requires 1.18.29 or newer with that API. |
 | OpenCode 2 | Adds evidence through `ctx.session.hook('compaction')`. Verified with 2.0.10; beta `0.0.0-beta-19157` is unsupported. |
 
-Failed scoring can fall back to cached judgments and unscored evidence. Recovery is incomplete. No real-task recall gain is established. See [compatibility and verification](docs/SETUP.md) for test coverage.
+Codex and Claude Code receive the recovery note after compaction. OpenCode adds it to the summarizer's prompt. Codex and OpenCode support online ranking of bounded tool passages. Claude Code tool results remain local recovery evidence and are not ranked online.
 
 ## Ask your agent to install
 
@@ -45,7 +49,7 @@ The key helper reads hidden terminal input and stores it in `~/.config/typesafe/
 
 ## Data processing and reference
 
-Automatic scoring sends eligible assistant prose to TypeSafe. Compaction ranking also sends bounded visible assistant passages, a latest-user query, and source context. Codex and OpenCode include bounded plain-text tool passages. Verdict caches store judgments and hashes; recovery snapshots store selected transcript excerpts.
+Automatic scoring sends eligible assistant prose to TypeSafe. Compaction ranking also sends bounded visible assistant passages, a latest-user query, and source context. Tool-passage processing depends on the [integration](#supported-integrations). Verdict caches store judgments and hashes; recovery snapshots store selected transcript excerpts.
 
 - [Setup, compatibility, private key entry, and removal](docs/SETUP.md)
 - [CLI flags, static rules, passage ranking, and limits](docs/CLI.md)

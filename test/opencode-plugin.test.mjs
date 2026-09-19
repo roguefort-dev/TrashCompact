@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { convertMessages, createPlugin, createRecovery } from '../opencode/plugin.mjs';
 import { installPlugin } from '../opencode/install.mjs';
+import { loadRecords, protectRecords, runPolicies } from '../src/filter-transcript.mjs';
 const note = '[TrashCompact recovery context] Keep the API contract.';
 const messages = [{role:'user',content:[{type:'text',text:'Keep the API contract.'},{type:'media',data:'private'}]}, {role:'assistant',content:[{type:'reasoning',text:'hidden'},{type:'text',text:'Implemented.'},{type:'tool-call',id:'c',name:'read',input:{path:'app.js'}}]}, {role:'tool',content:[{type:'tool-result',id:'c',result:{type:'content',value:[{type:'text',text:'export default 1;'},{type:'file',uri:'secret'}]}}]}, {role:'system',content:[{type:'text',text:'private instructions'}]}];
 test('conversion only includes known visible text and tool fields',()=> {
@@ -15,6 +16,48 @@ test('conversion only includes known visible text and tool fields',()=> {
  const v1=convertMessages([{info:{role:'assistant'},parts:[{type:'reasoning',text:'hidden'},{type:'tool',callID:'t',tool:'read',state:{status:'completed',input:{filePath:'x'},output:'contents',metadata:{private:'secret'}}}]}],1);
  assert.equal(v1.length,2); assert.ok(!JSON.stringify(v1).includes('secret'));
 });
+for (const version of [1, 2]) {
+ const source = (role, parts) => version === 1 ? {info:{role},parts} : {role,content:parts};
+ test(`v${version}: multiple visible user parts remain one human turn`,()=> {
+  const converted=convertMessages([source('user',[
+   {type:'text',text:'First instruction.'}, {type:'text',text:'hidden',ignored:true},
+   {type:'media',data:'secret'}, {type:'text',text:'Second instruction.'},
+  ])],version);
+  assert.equal(converted.length,1);
+  assert.equal(converted[0].payload.content[0].text,'First instruction.\nSecond instruction.');
+ });
+ test(`v${version}: completed tool output does not invent a successful exit status`,()=> {
+  const parts=version===1
+   ? [{type:'tool',callID:'unknown',tool:'bash',state:{status:'completed',input:{command:'false'},output:'Unknown process result'}}]
+   : [{type:'tool-call',id:'unknown',name:'bash',input:{command:'false'}},{type:'tool-result',id:'unknown',result:{type:'text',value:'Unknown process result'}}];
+  const converted=convertMessages([source('assistant',parts)],version);
+  assert.equal(converted[1].payload.output,'Unknown process result');
+ });
+ test(`v${version}: explicit tool errors expire after two source human messages`,async()=> {
+  const root=await mkdtemp(join(tmpdir(),'tc-plugin-errors-'));
+  try {
+   for (const error of ['Missing file','']) {
+    const failure=source('assistant',version===1
+     ? [{type:'tool',callID:'failed',tool:'read',state:{status:'error',input:{path:'missing'},error}}]
+     : [{type:'tool-call',id:'failed',name:'read',input:{path:'missing'}},{type:'tool-result',id:'failed',result:{type:'error',value:error}}]);
+    const human=source('user',[{type:'text',text:'Continue.'},{type:'text',text:'Keep going.'}]);
+    for (const age of [0,1,2]) {
+     const converted=convertMessages([human,failure,...Array(age).fill(human)],version);
+     assert.deepEqual(converted[2].payload.output,{output:error,is_error:true});
+     const path=join(root,'visible.jsonl');
+     await writeFile(path,converted.map(record=>JSON.stringify(record)).join('\n'));
+     const {records,totalTurns}=loadRecords(path);
+     assert.equal(totalTurns,age+1);
+     protectRecords(records,5);runPolicies(records,5);
+     for (const record of records.filter(record=>record.issuedIds.length || record.answersIds.length)) {
+      assert.equal(record.removed,age===2?'expired-tool-failure':undefined);
+     }
+     assert.ok(records.filter(record=>record.role==='user').every(record=>!record.removed));
+    }
+   }
+  } finally {await rm(root,{recursive:true,force:true});}
+ });
+}
 test('compaction callbacks enrich native summary with bounded note and clean temporary transcript',async()=> {
  const root=await mkdtemp(join(tmpdir(),'tc-plugin-test-')); const calls=[];
  try {

@@ -12,6 +12,9 @@ export function detectFormat(entries) {
 // reasoning, images, and unfamiliar schemas remain exclusively in the original log.
 export function readableContent(content) {
   if (typeof content === 'string') return content;
+  if (content && typeof content === 'object' && !Array.isArray(content) &&
+      Object.keys(content).every(key => ['output','is_error'].includes(key)) && content.is_error === true && typeof content.output === 'string')
+    return JSON.stringify(content);
   if (!Array.isArray(content)) return '';
   return content.filter((block) => ['input_text', 'output_text', 'text'].includes(block?.type) && typeof block.text === 'string')
     .map((block) => block.text).join('\n');
@@ -160,7 +163,7 @@ function focusedExcerpt(text, limit, expression) {
   return result;
 }
 
-const FAILURE = /\b(?:FAIL(?:ED|URE)?|ERROR|Exception|unresolved|not implemented|not installed|disabled|blocked)\b|(?:exit_code["']?\s*:\s*[1-9]|exited with code [1-9])/i;
+const FAILURE = /\b(?:FAIL(?:ED|URE)?(?!\s*0\b)|ERROR|Exception|unresolved|not implemented|not installed|disabled|blocked)\b|(?:exit_code["']?\s*:\s*[1-9]|exited with code [1-9])/i;
 const RESULT = /(?:\b\d+\s+(?:tests?|checks?)\s+(?:passed|failed)|\b(?:tests?|checks?)\s*:\s*\d+|^\s*(?:#\s*)?(?:pass|fail|tests)\s+\d+|\b(?:verification|validation|remaining|limitations?)\b)/im;
 const TOOL_RESULT = /(?:\b\d+\s+(?:tests?|checks?)\s+(?:passed|failed)|^\s*(?:#\s*)?(?:pass|fail|tests)\s+\d+\s*$)/im;
 const DIAGNOSTIC = /(?:^|\n)\s*(?:FAIL(?:ED|URE)?(?::|(?!\s*0(?:\s|$))\s+)|ERROR(?::|\s)|Traceback \(most recent call last\):|(?:Process )?exited with code [1-9]|error:)/i;
@@ -181,7 +184,7 @@ function toolEvidence(record, calls) {
   // empty/success acknowledgment is omitted from this bounded note.
   const terminal = ['exec_command', 'shell', 'shell_command', 'Bash'].includes(call?.name);
   const status = /(?:^|\n)Process exited with code (\d+)\s*(?:\n|$)/.exec(output);
-  const failed = shape?.isError === true || shape?.success === false || shape?.ok === false ||
+  const failed = shape?.is_error === true || shape?.isError === true || shape?.success === false || shape?.ok === false ||
     (coordination && ['failed', 'error'].includes(shape?.status)) ||
     (Number.isInteger(shape?.exit_code) && shape.exit_code !== 0) ||
     (status && Number(status[1]) !== 0) ||
@@ -191,7 +194,9 @@ function toolEvidence(record, calls) {
     (receipt && !failed) || (coordination && !failed && /^(?:null|true|message (?:sent|delivered))\s*$/i.test(output.trim()))) return null;
   const measured = record.category !== CATEGORY.FILE_READ && (terminal || status || Number.isInteger(shape?.exit_code)) &&
     TOOL_RESULT.test(typeof shape?.output === 'string' ? shape.output : output);
-  return { output, call, priority: failed ? 0 : measured ? 1 : 2 };
+  const explicitError = shape?.is_error === true && typeof shape.output === 'string' &&
+    Object.keys(shape).every(key => ['output','is_error'].includes(key));
+  return { output: explicitError ? shape.output : output, call, priority: failed ? 0 : measured ? 1 : 2 };
 }
 
 // An offline evidence capsule for SessionStart(compact), not instructions to a
@@ -319,7 +324,7 @@ export function recoveryEvidence(records, budget = 6000, ranking = null) {
       kind: record.category, ...(tool?.call ? { call: { id: tool.call.id, name: tool.call.name,
         ...(typeof tool.call.input.command === 'string' ? { command: boundedExcerpt(tool.call.input.command, 160),
           incomplete: Buffer.byteLength(tool.call.input.command) > 160 } : {}) } } : {}),
-      excerpt: text, incomplete: text !== (record.role === 'user' ? record.text : source) }) + '\n';
+      excerpt: text, incomplete: !!record.normalized || text !== (record.role === 'user' ? record.text : source) }) + '\n';
     if (Buffer.byteLength(output + line) <= budget) {
       output += line;
       // A protected final may already contain an exact newer passage. Count it

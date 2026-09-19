@@ -20,18 +20,24 @@ export function convertMessages(messages, version) {
     if (!['user', 'assistant', 'tool'].includes(role)) continue;
     const parts = version === 1 ? entry.parts : entry.content;
     if (!Array.isArray(parts)) continue;
+    // A source user message is one human turn, even when it has several text parts.
+    if (role === 'user') {
+      const visible = parts.filter(part => part?.type === 'text' && !part.ignored && typeof part.text === 'string');
+      if (visible.length) records.push(message(role, visible.map(part => part.text).join('\n')));
+      continue;
+    }
     for (const part of parts) {
       if (part?.type === 'text' && !part.ignored && typeof part.text === 'string' && role !== 'tool') records.push(message(role, part.text));
       if (version === 1 && role === 'assistant' && part?.type === 'tool' && typeof part.callID === 'string' && typeof part.tool === 'string') {
         records.push(call(part.callID, part.tool, part.state?.input));
         if (part.state?.status === 'completed' && typeof part.state.output === 'string') records.push(result(part.callID, part.state.output));
-        if (part.state?.status === 'error' && typeof part.state.error === 'string') records.push(result(part.callID, part.state.error));
+        if (part.state?.status === 'error' && typeof part.state.error === 'string') records.push(result(part.callID, { output: part.state.error, is_error: true }));
       }
       if (version === 2 && role === 'assistant' && part?.type === 'tool-call' && typeof part.id === 'string' && typeof part.name === 'string') records.push(call(part.id, part.name, part.input));
       if (version === 2 && ['assistant', 'tool'].includes(role) && part?.type === 'tool-result' && typeof part.id === 'string') {
         const value = part.result;
         const text = ['text', 'error'].includes(value?.type) && typeof value.value === 'string' ? value.value : value?.type === 'content' ? textParts(value.value) : '';
-        if (text) records.push(result(part.id, text));
+        if (text || value?.type === 'error' && typeof value.value === 'string') records.push(result(part.id, value.type === 'error' ? { output: text, is_error: true } : text));
       }
     }
   }

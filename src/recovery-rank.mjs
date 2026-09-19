@@ -42,7 +42,11 @@ function sourcesFor(record, calls) {
     ? { name: bounded(call.name,80), command: bounded(command,240), cwd: bounded(cwd,160) } : null;
   const scopeKey = hash({ name: call?.name ?? null, command, cwd, callId: payload.call_id });
   const common = { scope, scopeKey, commandKey: command && cwd ? hash({ name: call.name, command, cwd }) : null };
-  if (typeof payload.output === 'string') return [{ ...common, text: payload.output, field: 'output', offset: 0 }];
+  if (payload.output && !Array.isArray(payload.output) && typeof payload.output === 'object' &&
+      Object.keys(payload.output).every(key => ['output','is_error'].includes(key)) &&
+      payload.output.is_error === true && typeof payload.output.output === 'string')
+    return [{ ...common, text: payload.output.output, field: record.normalized ? 'normalized_output.output' : 'output.output', offset: 0 }];
+  if (typeof payload.output === 'string') return [{ ...common, text: payload.output, field: record.normalized ? 'normalized_output' : 'output', offset: 0 }];
   if (!Array.isArray(payload.output) || !payload.output.every(block =>
       ['input_text','output_text','text'].includes(block?.type) && typeof block.text === 'string' && Object.keys(block).every(key => ['type','text'].includes(key)))) return [];
   let offset = 0;

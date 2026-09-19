@@ -34,7 +34,7 @@ export const POLICY = Object.fromEntries(Object.values(CATEGORY).map((category) 
   ...(category === CATEGORY.COMPACT_SUMMARY ? { pinned: true } : {}),
 }]));
 
-// Commands whose output describes status; failures may remain unresolved indefinitely.
+// Commands whose output describes status. The pair-aware tool policy handles failure expiry.
 const STATUS_COMMAND = /\b(?:npm|pnpm|yarn|bun|npx)\s+(?:run\s+)?(?:test|build|lint|typecheck|jest|vitest|tsc)\b|\b(?:vitest|jest|pytest|eslint|prettier|ruff|black|tsc|mypy)\b|^\s*git\s+(?:status|diff|log|add|commit|push|pull|fetch|stash)\b|^\s*(?:echo|true|false|sleep|clear)\b|\bmake\b/;
 
 // Commands that emit file-related evidence, including partial reads.

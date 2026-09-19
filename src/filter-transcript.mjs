@@ -59,7 +59,7 @@ const CATEGORIES = {
 };
 
 const DEFAULTS = {
-  batch: 8, keepTail: 20, chars: 1200,
+  batch: 8, keepTail: 5, chars: 1200,
   threshold: 0.75, minConfidence: 0.55,
 };
 
@@ -302,7 +302,7 @@ function protectRecords(records, keepTail) {
 // Remove proven redundant tool pairs before local metadata and empty records.
 // Already removed entries stay hidden from subsequent policy checks.
 function runPolicies(records, keepTail) {
-  pruneToolExchanges(records, keepTail);
+  pruneToolExchanges(records);
   const totalTurns = records.length ? records[records.length - 1].turn : 0;
   const masked = records.map((record) =>
     record.removed ? { category: CATEGORY.EMPTY, supersedeKey: null } : record);
@@ -633,7 +633,7 @@ async function main() {
 
   const body = options.digest
     ? kept.filter((record) => record.text?.length).map((record) => `## ${record.category} (e${record.index})\n\n${record.text}`).join("\n\n")
-    : kept.map((record) => record.raw).join("\n");
+    : kept.map((record) => record.normalized ? JSON.stringify(record.entry) : record.raw).join("\n");
 
   if (options.out) writeFileSync(options.out, `${body}\n`);
   else process.stdout.write(`${body}\n`);

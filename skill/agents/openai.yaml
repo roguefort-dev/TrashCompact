@@ -1,6 +1,6 @@
 interface:
   display_name: "TrashCompact"
-  short_description: "Set up Jev context recovery for coding agents"
-  default_prompt: "Use $trashcompact to set up context recovery for my coding agent or inspect an explicitly selected transcript."
+  short_description: "Set up Jev context recovery for your harness"
+  default_prompt: "Use $trashcompact to set up context recovery for my harness or inspect an explicitly selected transcript."
 policy:
   allow_implicit_invocation: false
