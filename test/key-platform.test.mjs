@@ -157,7 +157,21 @@ test('native Windows replacement keeps only the current user in a protected cred
   mkdirSync(join(home, 'credentials with spaces'));
   writeFileSync(path, 'OTHER=keep\nTYPESAFE_API_KEY=synthetic-old\n');
   const env = { ...process.env, HOME: home, USERPROFILE: home, TRASHCOMPACT_ENV: path };
-  savePrivateKey(synthetic, { env });
+  savePrivateKey(synthetic, {
+    env,
+    restrictAccess(staged, kind, options) {
+      restrictWindowsAccess(staged, kind, {
+        ...options,
+        run(command, args, settings) {
+          // This fixture contains synthetic data only. Capture ACL diagnostics
+          // before the writer puts even the synthetic key in the staging file.
+          const result = spawnSync(command, args, { ...settings, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+          assert.equal(result.status, 0, `Restricting the synthetic ${kind} failed: ${result.error?.message || result.stderr || result.stdout}`);
+          return result;
+        },
+      });
+    },
+  });
   const script = `
 $ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
