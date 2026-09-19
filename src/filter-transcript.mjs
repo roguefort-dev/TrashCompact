@@ -22,6 +22,7 @@ import process from "node:process";
 import { CATEGORY, POLICY, classify, applyPolicies, liveWindowStart } from "./classify.mjs";
 import { prepareRecoveryRanking, scoreRecoveryRanking, rankedPassages } from "./recovery-rank.mjs";
 import { detectFormat, classifyCodex, codexTool, recoveryEvidence } from "./codex.mjs";
+import { pruneToolExchanges } from "./static-tools.mjs";
 
 // Prefer this checkout own node_modules, so a fresh clone works with no global install.
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -291,15 +292,17 @@ function dedupPayloads(records) {
 function protectRecords(records, keepTail) {
   const answered = new Set(records.flatMap((r) => r.answersIds ?? []));
   records.forEach((record, index) => {
-    record.protected = index >= records.length - keepTail || POLICY[record.category]?.pinned ||
+    record.tailProtected = index >= records.length - keepTail;
+    record.protected = record.tailProtected || POLICY[record.category]?.pinned ||
       record.pinned || record.category === CATEGORY.HUMAN_INSTRUCTION ||
       record.issuedIds?.some((id) => !answered.has(id));
   });
 }
 
-// Supersession and half-life, from src/classify.mjs. Entries already removed are hidden
-// from the rules so a deduped copy cannot claim a key its survivor needs.
+// Remove proven redundant tool pairs before local metadata and empty records.
+// Already removed entries stay hidden from subsequent policy checks.
 function runPolicies(records, keepTail) {
+  pruneToolExchanges(records, keepTail);
   const totalTurns = records.length ? records[records.length - 1].turn : 0;
   const masked = records.map((record) =>
     record.removed ? { category: CATEGORY.EMPTY, supersedeKey: null } : record);
@@ -322,7 +325,7 @@ const chunk = (items, size) => {
 
 async function runPass1(client, sdk, candidates, options, usage) {
   const { score, choice } = sdk;
-  const batches = chunk(candidates.filter((r) => r.category === CATEGORY.PROSE && !r.pinned && !r.protected && r.text.length <= options.chars), options.batch);
+  const batches = chunk(candidates.filter((r) => !r.removed && r.category === CATEGORY.PROSE && !r.pinned && !r.protected && r.text.length <= options.chars), options.batch);
   for (let position = 0; position < batches.length; position++) {
     const batch = batches[position];
     const state = { entries: {} };

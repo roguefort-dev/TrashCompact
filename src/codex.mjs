@@ -33,6 +33,7 @@ export function classifyCodex(entry, toolByUseId = new Map()) {
   const item = entry.payload;
   const base = { category: CATEGORY.TOOL_OUTPUT, text: '', paths: [], supersedeKey: null,
     imageBytes: 0, pinned: true, role: null, issuedIds: [], answersIds: [] };
+  if (entry.type === 'event_msg' && item?.type === 'token_count' && Object.keys(item).every(key => ['type','info','rate_limits'].includes(key))) return { ...base, category: CATEGORY.LOCAL_ONLY, pinned: false };
   if (entry.type === 'compacted') {
     // replacement_history is preserved raw: its presence does not prove a live
     // boundary and can contain engine instructions and encrypted response items.
@@ -45,7 +46,7 @@ export function classifyCodex(entry, toolByUseId = new Map()) {
     if (role === 'system' || role === 'developer') return { ...base, role };
     if (role === 'user') return { ...base, role, text, category: CATEGORY.HUMAN_INSTRUCTION };
     if (role !== 'assistant') return base;
-    const pure = Array.isArray(item.content) && item.content.length > 0 && item.content.every((block) =>
+    const pure = Array.isArray(item.content) && item.content.every((block) =>
       ['input_text', 'output_text', 'text'].includes(block?.type) && typeof block.text === 'string' &&
       Object.keys(block).every((key) => ['type', 'text'].includes(key)));
     // A recipient-bearing message is a routed/tool message, not standalone prose.
@@ -55,6 +56,7 @@ export function classifyCodex(entry, toolByUseId = new Map()) {
     // envelope key, but extract only content text for scoring and recovery.
     const knownFields = Object.keys(item).every((key) => ['type', 'id', 'role', 'content', 'phase', 'channel', 'end_turn', 'status', 'recipient',
       'internal_chat_message_metadata_passthrough'].includes(key));
+    if (pure && !text.trim() && (item.status == null || item.status === 'completed') && visible && knownFields && (!item.recipient || item.recipient === 'all')) return { ...base, role, category: CATEGORY.EMPTY, pinned: false };
     if (pure && text.trim() && visible && knownFields && (!item.recipient || item.recipient === 'all')) {
       return { ...base, role, text, category: CATEGORY.PROSE, pinned: false };
     }

@@ -1,56 +1,54 @@
 # TrashCompact
 
-Preserve useful context across Claude Code, Codex, and OpenCode compaction with TypeSafe’s Jev. Your coding agent can install it; you enter your API key privately in a terminal and complete any required platform approval.
+TrashCompact filters transcripts and selects compaction evidence using TypeSafe's Jev for Claude Code, Codex, and compatible OpenCode versions.
 
-TrashCompact selects bounded historical evidence around the platform’s native compaction. It does not rewrite live conversation history or replace the native compactor.
+## How it works
 
-## Ask your agent to install
+1. Before Jev scoring, static rules remove known local metadata, empty records, adjacent exact assistant repetitions, and complete tool call/result pairs for successful empty no-ops or exact repeated reads. User messages, failed tools, and the last 20 records are protected.
+2. Jev scores eligible standalone assistant prose. Low scores permit removal only when confidence meets the configured threshold. Jev cannot remove oversized, unscored, mixed, or unknown entries.
+3. At compaction, Jev also ranks bounded passages for a recovery note of up to 6,000 UTF-8 bytes. Tool-passage ranking is supported for Codex and OpenCode. Claude tool results remain local recovery evidence.
 
-Copy the block for your application into its chat. Setup requires Linux or macOS, Node.js 20+, Bash, Git, npm, and a TypeSafe API key. Windows and unrecognized platform variants are not covered by this setup.
-
-**Claude Code**
-
-```text
-Install TrashCompact for Claude Code from https://github.com/roguefort-dev/TrashCompact.git into ~/.local/share/trashcompact. Read docs/SETUP.md and follow its agent installation instructions with target claude. Preserve existing files and settings. I authorize its documented automatic TypeSafe scoring. Give me the absolute bash install/key.sh command to enter my key privately in my terminal; never request, read, or handle the key in chat. Explain any remaining platform approval and restart steps.
-```
-
-**Codex**
-
-```text
-Install TrashCompact for Codex from https://github.com/roguefort-dev/TrashCompact.git into ~/.local/share/trashcompact. Read docs/SETUP.md and follow its agent installation instructions with target codex. Preserve existing files and settings. I authorize its documented automatic TypeSafe scoring. Give me the absolute bash install/key.sh command to enter my key privately in my terminal; never request, read, or handle the key in chat. Leave required /hooks trust review to me and explain restart steps.
-```
-
-**OpenCode / OpenCode 2**
-
-OpenCode 2 `0.0.0-beta-19157` is **unsupported for Jev compaction**: it loads plugins but never invokes the required compaction hook. Use a compatible release; plugin loading alone is not verification.
-
-```text
-Install TrashCompact from https://github.com/roguefort-dev/TrashCompact.git into ~/.local/share/trashcompact. Read docs/SETUP.md and identify my OpenCode version and its supported plugin API before selecting target opencode or opencode2. Preserve existing files and settings. I authorize its documented automatic TypeSafe scoring. Give me the absolute bash install/key.sh command to enter my key privately in my terminal; never request, read, or handle the key in chat. Explain any remaining approval and restart steps. Do not enable the optional response-compaction service.
-```
-
-The key command reads hidden input from your terminal and stores it privately in `~/.config/typesafe/env`. Do not paste the key into chat, command arguments, or a repository file. In Codex, review and trust the installed hooks through `/hooks` in the terminal CLI (not desktop chat); your agent will give you the command to open it. Installation cannot bypass that approval. Reopen or restart your application after setup so it loads the integration.
-
-**Processing scope:** automatic scoring sends eligible assistant prose to TypeSafe. Compaction scoring also sends bounded visible assistant passages, a latest-user query, and short source context. Codex and supported OpenCode integrations also rank bounded plain-text tool passages. Claude tool results can appear in local recovery evidence but are not sent for tool-passage ranking. Local private caches and recovery notes retain selected historical evidence. Install only where that processing is appropriate; the CLI supports offline inspection. See [setup and removal](docs/SETUP.md) for exact commands.
-
-## What each integration does
+These removals affect filtered exports and recovery selection. The integrations leave live history and the native summarizer's transcript intact. Codex and Claude receive the recovery note after compaction. OpenCode adds it to the summarizer's prompt.
 
 | Application | Integration |
 |---|---|
-| Codex | Asynchronous Stop scoring; synchronous PreCompact scoring and offline snapshot; SessionStart after compaction delivers recovery context. Required `/hooks` trust review. |
-| Claude Code | Stop scoring; PreCompact scoring and snapshot; SessionStart after compaction delivers recovery context using Claude’s hook contract. |
-| OpenCode | Jev-selected evidence is added through its compaction plugin hook before native summarization. |
-| OpenCode 2 | Jev-selected evidence is supplied through its supported compaction plugin API. Version compatibility must be checked during setup. |
+| Codex | Stop scores completed turns. PreCompact prepares the note; SessionStart delivers it after compaction. Requires `/hooks` trust review. |
+| Claude Code | Stop, PreCompact, and SessionStart hooks. |
+| OpenCode v1 | Adds evidence through `experimental.session.compacting`. Requires 1.18.29 or newer with that API. |
+| OpenCode 2 | Adds evidence through `ctx.session.hook('compaction')`. Verified with 2.0.10; beta `0.0.0-beta-19157` is unsupported. |
 
-Codex ignores plain PreCompact stdout: its recovery note arrives after native compaction and does not feed the summarizer. The Codex/Claude recovery note is capped at 6,000 UTF-8 bytes and supplements the native summary. If online scoring fails, recovery can still use cached judgments and conservative unscored evidence. Recovery is incomplete and historical statements may conflict.
+Failed scoring can fall back to cached judgments and unscored evidence. Recovery is incomplete. No real-task recall gain is established. See [compatibility and verification](docs/SETUP.md) for test coverage.
 
-After manually compacting a task, send a new user message to observe the resumed task. Installing TrashCompact alone does not compact or rewrite an already-open conversation.
+## Ask your agent to install
 
-## Verification and further reading
+Copy the block for your application into its chat. Setup requires Linux or macOS, Node.js 20+, Bash, Git, npm, and a TypeSafe API key. Windows is unsupported.
 
-Native Codex hook delivery has been verified end to end in an actual session. This verifies integration delivery, not improved recall or performance. Claude and OpenCode support have focused automated coverage. An isolated OpenCode CLI 2.0.10 runtime completed two manual native compactions, and both summarization requests contained the plugin’s recovery note. That synthetic test used a local mock model and scorer, not live Jev or real chats. OpenCode v1 has fixture coverage only; the older OpenCode 2 beta listed above lacks the required hook.
+### Claude Code
 
-- [Agent setup, private key entry, verification, and uninstall](docs/SETUP.md)
-- [CLI flags, passage ranking, retention, and evaluation limitations](docs/CLI.md)
-- [Optional OpenCode 2 response-compaction companion](opencode2/README.md): a separate Linux user service that requests native summarization after completed responses. It is not enabled by the setup above.
+```text
+Install https://github.com/roguefort-dev/TrashCompact.git at ~/.local/share/trashcompact for Claude Code. Follow docs/SETUP.md with target claude, preserving existing files and settings. I authorize the documented automatic TypeSafe scoring. Give me the absolute key-entry command to run privately and any approval/restart steps. Never handle the key yourself.
+```
+
+### Codex
+
+```text
+Install https://github.com/roguefort-dev/TrashCompact.git at ~/.local/share/trashcompact for Codex. Follow docs/SETUP.md with target codex, preserving existing files and settings. I authorize the documented automatic TypeSafe scoring. Give me the absolute key-entry command to run privately and the terminal /hooks trust-review and restart steps. Never handle the key yourself.
+```
+
+### OpenCode and OpenCode 2
+
+```text
+Install https://github.com/roguefort-dev/TrashCompact.git at ~/.local/share/trashcompact for OpenCode. Follow docs/SETUP.md, check version compatibility, and select target opencode or opencode2. Preserve existing files and settings. I authorize the documented automatic TypeSafe scoring. Give me the private key-entry command and approval/restart steps. Never handle the key yourself or enable the optional response-compaction service.
+```
+
+The key helper reads hidden terminal input and stores it in `~/.config/typesafe/env`. Enter the key there yourself. Codex hook trust requires `/hooks` in its terminal CLI. Restart the application after setup; after manual compaction, send a new message to observe the resumed task.
+
+## Data processing and reference
+
+Automatic scoring sends eligible assistant prose to TypeSafe. Compaction ranking also sends bounded visible assistant passages, a latest-user query, and source context. Codex and OpenCode include bounded plain-text tool passages. Verdict caches store judgments and hashes; recovery snapshots store selected transcript excerpts.
+
+- [Setup, compatibility, private key entry, and removal](docs/SETUP.md)
+- [CLI flags, static rules, passage ranking, and limits](docs/CLI.md)
+- [Optional OpenCode 2 response-compaction service](opencode2/README.md). This separate Linux service requests native summarization after completed responses.
 
 MIT license.
