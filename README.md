@@ -1,126 +1,56 @@
 # TrashCompact
 
-Take the trash out of your Claude Code context.
+Preserve useful context across Claude Code, Codex, and OpenCode compaction with TypeSafe’s Jev. Your coding agent can install it; you enter your API key privately in a terminal and complete any required platform approval.
 
-Long sessions fill up with entries that carry no working knowledge — `process finished with exit code 0`, progress pings, the third read of a file you already read, a directory listing from twenty turns ago. When compaction finally runs, all of that competes for the summariser's attention with the things that actually mattered: the decision you made, the error and its cause, the constant that broke the build.
+TrashCompact selects bounded historical evidence around the platform’s native compaction. It does not rewrite live conversation history or replace the native compactor.
 
-TrashCompact scores every entry in your transcript for durable working knowledge using [TypeSafe](https://typesafe.ai)'s **Jev** — a System One model that returns typed judgments with calibrated confidence instead of generated text — and uses the result to steer Claude Code's own compaction.
+## Ask your agent to install
 
-```
-entries  389 → 174  (removed 215: 96 noise, 61 redundant, 38 orphan-call, 20 exact-repeat)
-chars    412,880 → 168,204  (59.3% smaller)
-```
+Copy the block for your application into its chat. Setup requires Linux or macOS, Node.js 20+, Bash, Git, npm, and a TypeSafe API key. Windows and unrecognized platform variants are not covered by this setup.
 
-## Install
+**Claude Code**
 
-```bash
-git clone https://github.com/roguefort-dev/TrashCompact.git
-cd TrashCompact
-./install.sh
+```text
+Install TrashCompact for Claude Code from https://github.com/roguefort-dev/TrashCompact.git into ~/.local/share/trashcompact. Read docs/SETUP.md and follow its agent installation instructions with target claude. Preserve existing files and settings. I authorize its documented automatic TypeSafe scoring. Give me the absolute bash install/key.sh command to enter my key privately in my terminal; never request, read, or handle the key in chat. Explain any remaining platform approval and restart steps.
 ```
 
-The installer checks your Node version, installs the SDK, asks for a TypeSafe API key (hidden input, written to `~/.config/typesafe/env` with mode `0600`, never to this repo), verifies the key with one live call, links the skill, and wires the hooks. It is idempotent — re-run it any time.
+**Codex**
 
-Hooks are live in new sessions. In a session that is already open, run `/hooks` once to reload.
-
-```bash
-./install.sh --uninstall   # removes hooks and skill; leaves your key and cache alone
+```text
+Install TrashCompact for Codex from https://github.com/roguefort-dev/TrashCompact.git into ~/.local/share/trashcompact. Read docs/SETUP.md and follow its agent installation instructions with target codex. Preserve existing files and settings. I authorize its documented automatic TypeSafe scoring. Give me the absolute bash install/key.sh command to enter my key privately in my terminal; never request, read, or handle the key in chat. Leave required /hooks trust review to me and explain restart steps.
 ```
 
-## How it works
+**OpenCode / OpenCode 2**
 
-Three passes, two of which are free.
+OpenCode 2 `0.0.0-beta-19157` is **unsupported for Jev compaction**: it loads plugins but never invokes the required compaction hook. Use a compatible release; plugin loading alone is not verification.
 
-| Pass | Runs in | Does |
-|---|---|---|
-| 0 | code | Collapses entries that normalize to the same bytes, and derives each entry's **target key** — what it is *about*, parsed from the tool call that produced it (`tool:Read:src/env.ts`) |
-| 1 | Jev | Scores **retention**: is this durable working knowledge, routine output, or transient status? |
-| 2 | Jev | Scores **redundancy**: is everything this entry says already said by a later entry on the same target key? |
-
-Two design choices make this cheap and reliable:
-
-**Redundancy is directional.** An entry is only ever compared against entries that came *after* it. That removes any need for the model to be symmetric or transitive — [`jev-1.13` documents that structural invariants across separate questions are not guaranteed](https://docs.typesafe.ai) — and turns what looks like an O(n²) dedup into O(n).
-
-**Comparison is shortlisted in code.** Because pass 0 already knows an entry's target key, pass 2 only ever compares entries about the same thing. A read of `src/env.ts` is never judged against a test run.
-
-## Incremental by default
-
-The Stop hook scores only the entries the turn just appended. Verdicts are cached by entry uuid in `~/.claude/trashcompact/`, so nothing is ever judged twice:
-
-```
-run 1   +5 scored,  0 cached,  1 requests, ~$0.0001
-run 2   +6 scored,  5 cached,  2 requests, ~$0.0001
-run 3   +0 scored, 11 cached,  0 requests, ~$0.0000     ← nothing new, nothing spent
+```text
+Install TrashCompact from https://github.com/roguefort-dev/TrashCompact.git into ~/.local/share/trashcompact. Read docs/SETUP.md and identify my OpenCode version and its supported plugin API before selecting target opencode or opencode2. Preserve existing files and settings. I authorize its documented automatic TypeSafe scoring. Give me the absolute bash install/key.sh command to enter my key privately in my terminal; never request, read, or handle the key in chat. Explain any remaining approval and restart steps. Do not enable the optional response-compaction service.
 ```
 
-Retention is final on arrival — an entry's own value does not change because later entries exist. Redundancy is re-checked only when a **new entry lands on the same target key**, which is one question, not a rescan.
+The key command reads hidden input from your terminal and stores it privately in `~/.config/typesafe/env`. Do not paste the key into chat, command arguments, or a repository file. In Codex, review and trust the installed hooks through `/hooks` in the terminal CLI (not desktop chat); your agent will give you the command to open it. Installation cannot bypass that approval. Reopen or restart your application after setup so it loads the integration.
 
-By the time compaction fires, every verdict is already paid for, so the PreCompact hook runs **fully offline**: no latency, no cost, at the exact moment the context is full and you are waiting.
+**Processing scope:** automatic scoring sends eligible assistant prose to TypeSafe. Compaction scoring also sends bounded visible assistant passages, a latest-user query, and short source context. Codex and supported OpenCode integrations also rank bounded plain-text tool passages. Claude tool results can appear in local recovery evidence but are not sent for tool-passage ranking. Local private caches and recovery notes retain selected historical evidence. Install only where that processing is appropriate; the CLI supports offline inspection. See [setup and removal](docs/SETUP.md) for exact commands.
 
-## What it does and does not do
+## What each integration does
 
-**It steers compaction.** Claude Code merges a PreCompact hook's stdout into the summariser's instructions. TrashCompact uses that to name what must survive and to say how much of the session was noise.
+| Application | Integration |
+|---|---|
+| Codex | Asynchronous Stop scoring; synchronous PreCompact scoring and offline snapshot; SessionStart after compaction delivers recovery context. Required `/hooks` trust review. |
+| Claude Code | Stop scoring; PreCompact scoring and snapshot; SessionStart after compaction delivers recovery context using Claude’s hook contract. |
+| OpenCode | Jev-selected evidence is added through its compaction plugin hook before native summarization. |
+| OpenCode 2 | Jev-selected evidence is supplied through its supported compaction plugin API. Version compatibility must be checked during setup. |
 
-**It does not shrink the live context window.** No hook can — Claude Code's hook outputs can add context, gate a tool, or block, but nothing removes messages already in the window. Anything claiming otherwise is selling you something. The win here is that when compaction *does* happen, it keeps the right things.
+Codex ignores plain PreCompact stdout: its recovery note arrives after native compaction and does not feed the summarizer. The Codex/Claude recovery note is capped at 6,000 UTF-8 bytes and supplements the native summary. If online scoring fails, recovery can still use cached judgments and conservative unscored evidence. Recovery is incomplete and historical statements may conflict.
 
-**It never mutates your transcript.** The input file is read-only, always.
+After manually compacting a task, send a new user message to observe the resumed task. Installing TrashCompact alone does not compact or rewrite an already-open conversation.
 
-## Using it by hand
+## Verification and further reading
 
-The skill is user-invoked (`/trashcompact`), and the CLI works standalone:
+Native Codex hook delivery has been verified end to end in an actual session. This verifies integration delivery, not improved recall or performance. Claude and OpenCode support have focused automated coverage. An isolated OpenCode CLI 2.0.10 runtime completed two manual native compactions, and both summarization requests contained the plugin’s recovery note. That synthetic test used a local mock model and scorer, not live Jev or real chats. OpenCode v1 has fixture coverage only; the older OpenCode 2 beta listed above lacks the required hook.
 
-```bash
-./bin/trashcompact ~/.claude/projects/<slug>/<session>.jsonl --plan       # cost estimate, no API calls
-./bin/trashcompact <transcript> --update                                  # score new entries, cache them
-./bin/trashcompact <transcript> --offline --digest --out digest.md        # readable digest from cache
-./bin/trashcompact <transcript> --precompact                              # the steering text, offline
-```
+- [Agent setup, private key entry, verification, and uninstall](docs/SETUP.md)
+- [CLI flags, passage ranking, retention, and evaluation limitations](docs/CLI.md)
+- [Optional OpenCode 2 response-compaction companion](opencode2/README.md): a separate Linux user service that requests native summarization after completed responses. It is not enabled by the setup above.
 
-Find the current session's transcript:
-
-```bash
-ls -t ~/.claude/projects/$(pwd | sed 's#/#-#g')/*.jsonl | head -1
-```
-
-## Tuning
-
-Thresholds are applied when results are *read*, not when they are scored — so retuning costs nothing and re-scores nothing.
-
-| Flag | Default | Does |
-|---|---|---|
-| `--keep-tail N` | 20 | Never judge the last N entries |
-| `--threshold` | 0.75 | Retention score below which an entry is dropped |
-| `--min-confidence` | 0.55 | Confidence required before a drop is honoured |
-| `--redundancy-threshold` | 0.6 | Redundancy score below which an entry is dropped |
-| `--redundancy-confidence` | 0.7 | Confidence required for a redundancy drop |
-| `--batch N` | 8 | Entries per request |
-| `--siblings N` | 3 | Later entries an entry is compared against |
-| `--no-dedup` | — | Skip pass 2 |
-
-Both gates are asymmetric on purpose: **uncertainty keeps, it never drops.** An entry Jev is unsure about stays in.
-
-Apply flags to the hooks:
-
-```bash
-export TRASHCOMPACT_FLAGS="--keep-tail 40 --threshold 0.8"
-```
-
-## Cost
-
-Jev bills `$0.042` per million input tokens; output is free. A 1,600-entry session costs well under a cent to score in full, and the incremental hook spreads even that across turns.
-
-## What gets sent where
-
-TrashCompact sends transcript entry text to the TypeSafe API to score it. With the Stop hook installed this happens automatically, every turn, without a per-run prompt. **If you work on code you cannot send to a third party, do not install the hooks** — use the CLI by hand on the transcripts you choose.
-
-Your API key is read from `~/.config/typesafe/env` (mode `0600`), outside the repo. It is never passed as a command argument, never logged, and `.gitignore` covers the usual ways a credential ends up in a commit.
-
-## Requirements
-
-- Node 18+
-- Claude Code
-- A [TypeSafe](https://typesafe.ai) API key
-
-## License
-
-MIT
+MIT license.

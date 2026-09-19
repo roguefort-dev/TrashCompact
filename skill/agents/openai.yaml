@@ -1,4 +1,6 @@
 interface:
   display_name: "TrashCompact"
-  short_description: "Prune status noise and repeated context from a session transcript with Jev"
-  default_prompt: "Use $trashcompact to prune this transcript down to entries that carry durable working knowledge."
+  short_description: "Set up Jev context recovery for coding agents"
+  default_prompt: "Use $trashcompact to set up context recovery for my coding agent or inspect an explicitly selected transcript."
+policy:
+  allow_implicit_invocation: false

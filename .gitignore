@@ -1,5 +1,4 @@
 node_modules/
-package-lock.json
 
 # Never commit credentials or anything that could carry one.
 .env
@@ -11,5 +10,18 @@ secrets*
 # Local scoring state and scratch output.
 state/
 *.jsonl
-!example/*.jsonl
+!/example/codex-review.jsonl
 *.tmp
+
+# Local evaluations and environment-specific runtime probes.
+/reports/
+/DESIGN.md
+/opencode/verify-runtime.mjs
+/opencode2/verify-runtime.mjs
+/example/*-labels.json
+
+# Generated diagnostics and operating-system metadata.
+*.log
+/coverage/
+.DS_Store
+Thumbs.db

@@ -1,7 +1,7 @@
 {
   "name": "trashcompact",
   "version": "0.1.0",
-  "description": "Take the trash out of your Claude Code context. Scores every transcript entry for durable working knowledge with TypeSafe's Jev, drops the noise, and steers compaction with what is left.",
+  "description": "Preserve useful context across Claude Code, Codex, and OpenCode compaction with TypeSafe's Jev and bounded evidence recovery.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -9,21 +9,24 @@
   },
   "scripts": {
     "postinstall": "chmod +x bin/trashcompact bin/trashcompact-hook 2>/dev/null || true",
-    "self-test": "./bin/trashcompact --self-test"
+    "self-test": "./bin/trashcompact --self-test",
+    "test": "node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0"
   },
   "keywords": [
-    "claude-code",
+    "codex",
     "context",
     "compaction",
     "transcript",
     "typesafe",
-    "jev"
+    "jev",
+    "claude-code",
+    "opencode"
   ],
   "files": [
     "bin",
@@ -31,6 +34,14 @@
     "hooks",
     "skill",
     "install",
-    "install.sh"
+    "install.sh",
+    "opencode2/auto-compact.mjs",
+    "opencode2/install-service.mjs",
+    "opencode2/service.mjs",
+    "opencode2/README.md",
+    "opencode/install.mjs",
+    "opencode/plugin.mjs",
+    "docs",
+    "example/codex-review.jsonl"
   ]
 }

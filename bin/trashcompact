@@ -5,15 +5,7 @@ set -eu
 SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
 ROOT=$(cd "$(dirname "$SELF")/.." && pwd)
 
-# The key lives outside the repo so it is never at risk of being committed.
-ENV_FILE="${TRASHCOMPACT_ENV:-$HOME/.config/typesafe/env}"
-if [ -z "${TYPESAFE_API_KEY:-}" ] && [ -r "$ENV_FILE" ]; then
-  set -a
-  . "$ENV_FILE"
-  set +a
-fi
-
-# fnm/nvm installs are not always on a hook's PATH; fall back to the default alias.
+# Resolve node first; launch.mjs loads a literal key only for online modes.
 if command -v node >/dev/null 2>&1; then
   NODE=node
 elif [ -x "$HOME/.local/share/fnm/aliases/default/bin/node" ]; then
@@ -25,4 +17,4 @@ else
   exit 127
 fi
 
-exec "$NODE" "$ROOT/src/filter-transcript.mjs" "$@"
+exec "$NODE" "$ROOT/bin/launch.mjs" "$@"

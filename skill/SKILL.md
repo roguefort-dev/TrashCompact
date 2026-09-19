@@ -1,84 +1,30 @@
 ---
 name: trashcompact
-description: Score a Claude Code transcript for durable working knowledge and prune the noise, using TypeSafe's Jev.
-disable-model-invocation: true
+description: Install TrashCompact for Claude Code, Codex, or OpenCode, inspect explicit transcripts, and preserve bounded evidence across native compaction.
 ---
 
 # TrashCompact
 
-Prune a Claude Code transcript down to what a later reader actually needs. Three passes: one in code, two in [Jev](https://docs.typesafe.ai), TypeSafe's System One model.
+For installation, read `docs/SETUP.md` in the TrashCompact checkout and follow its target-specific instructions. Use `bash install.sh --target codex|claude|opencode|opencode2 --non-interactive` with the confirmed target. Give the human an absolute `bash /path/to/install/key.sh` command for private terminal entry; never request, read, or handle the API key in chat. Codex hook trust through `/hooks` remains a required human action. Restart/reopen the application after setup. Preserve existing settings and dirty checkouts.
 
-The hooks installed by `install.sh` already do this continuously. Reach for this skill to run it by hand — inspect a transcript, produce a digest, or tune thresholds against real output.
-
-## The passes
-
-| Pass | Runs in | Question |
-|---|---|---|
-| 0 | code | Do these entries normalize to the same bytes? What is each entry *about*? |
-| 1 | Jev | Is this durable working knowledge, routine output, or transient status? |
-| 2 | Jev | Is everything this entry says already said by a **later** entry about the same thing? |
-
-Pass 0 derives a **target key** by parsing the tool call behind each result — `tool:Read:src/env.ts`, `tool:Bash:npm test`. Pass 2 only compares entries sharing a key, so a file read is never judged against a test run. Untargeted prose gets a category from Jev inside the pass-1 request instead, riding the same state at near-zero extra cost.
-
-Comparison is **directional**: an entry is only compared against entries that came after it. That keeps this O(n), and keeps it off the model's known weak ground — `jev-1.13` does not guarantee structural invariants between separate questions, so a symmetric `dup(a,b) == dup(b,a)` design would be building on sand.
-
-## Running it
+Use the repository CLI to inspect an explicitly selected Codex or Claude transcript, score eligible assistant prose, or create an offline recovery note. Locate the installed TrashCompact checkout before running its commands; do not assume the user's current project contains the executable.
 
 ```bash
-TC=~/Documents/TrashCompact/bin/trashcompact
-
-$TC <transcript> --plan                          # what it would cost; no API calls
-$TC <transcript> --update                        # score only new entries, cache verdicts
-$TC <transcript> --offline --digest --out d.md   # readable digest from cache alone
-$TC <transcript> --precompact                    # the compaction steering text
-$TC <transcript> --out pruned.jsonl              # pruned transcript
+./bin/trashcompact <rollout.jsonl> --format codex --plan
+./bin/trashcompact <rollout.jsonl> --format codex --update
+./bin/trashcompact <rollout.jsonl> --format codex --recovery
 ```
 
-Locate the current session's transcript — `-maxdepth 1` matters, or you pick up subagent transcripts:
+`--plan` and `--recovery` are offline. Online scoring sends eligible transcript text to TypeSafe; use the user's existing authorization for that transcript. Installing and trusting the hooks enables asynchronous Stop scoring after completed turns and a synchronous PreCompact scoring pass when compaction occurs. Stop runs `--update` to score newly eligible assistant prose and reuse cached judgments, with a 110-second budget inside a 120-second hook timeout. It updates the cache without replacing the last message or compacting live context.
 
-```bash
-find ~/.claude/projects/$(pwd | sed 's#/#-#g') -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2
-```
+Codex ignores plain PreCompact stdout. PreCompact first runs a synchronous `--update --recovery-rank` pre-pass with a 45-second budget, then snapshots evidence offline with a 10-second budget even if scoring fails. SessionStart(source=compact) supplies that snapshot afterward as JSON additionalContext. The note does not feed the native summarizer. It supplements the built-in summary; it does not replace the compactor, edit the rollout, or remove live messages. Use Codex's `/hooks` interface for required trust review; never bypass it to make installation appear complete.
 
-## Reading the output
+Use the rollout path from the active task or hook. Never guess by choosing the newest file across sessions/subagents. Treat the format as version-sensitive. Preserve raw records and tool-call identities; the standalone CLI default admits only standalone visible assistant prose; the compaction hook additionally enables bounded passage ranking. User instructions, engine instructions, mixed/unknown content and opaque reasoning are not prose candidates.
 
-```
-entries  23 → 11  (removed 12: 5 orphan-call, 4 noise, 1 redundant, 2 exact-repeat)
-chars    1,308 → 909  (30.5% smaller)
-jev      0 requests, 0 input tokens
-```
+Drops require both low retention score (0–2) and sufficient confidence (0–1). Unscored and oversized entries stay. The protected tail defaults to 20 records. Use identical flags for comparable evaluation and a fresh state path when measuring live model behavior rather than cache replay.
 
-- `noise` — pass 1 scored it as transient status
-- `redundant` — pass 2 found a later entry carrying everything it says
-- `exact-repeat` — pass 0; normalizes to an identical earlier entry
-- `orphan-call` — a tool call whose every result was removed, so it carries nothing alone
-- `empty` — no text content
+Recovery notes quote historical evidence, omit engine boilerplate/ciphertext/previous recovery notes, and stay within 6,000 UTF-8 bytes. They are incomplete. Do not claim note delivery proves downstream recall, or that filtered-file size measures live-context savings.
 
-`0 requests` means every verdict came from cache. That is the normal state once the Stop hook has been running.
+The compaction hook enables experimental passage ranking. For manual use, inspect `--plan --recovery-rank`, score with `--update --recovery-rank`, then render using `--recovery --recovery-rank`. For Codex input, this opt-in expands external processing to bounded plain-text tool outputs, visible assistant spans, a latest-user query, and short source context. Claude tool-result passages remain local recovery evidence and are not ranked online. Do not infer that authorization for the default assistant-only scorer covers that expanded scope. Caps are 96 passages, 24 relation pairs, and 30,000 serialized bytes per request; the recovery note remains 6,000 bytes. Only cached ranking is used offline. Preserve current user constraints/final status; uncertain relations and generic successful tests do not establish resolution. Source-span ranking never authorizes deleting a whole record. Model confidence is not proof of correctness or native recall improvement.
 
-## Tuning
-
-Thresholds apply when results are read, never when they are scored — retuning is free and re-scores nothing.
-
-| Flag | Default |
-|---|---|
-| `--keep-tail` | 20 |
-| `--threshold` / `--min-confidence` | 0.75 / 0.55 |
-| `--redundancy-threshold` / `--redundancy-confidence` | 0.6 / 0.7 |
-| `--batch` / `--redundancy-batch` | 8 / 4 |
-| `--siblings` | 3 |
-| `--chars` | 1200 |
-
-Both gates are asymmetric so that **uncertainty keeps**. An entry drops only when Jev is low-scoring *and* confident.
-
-`--batch` is deliberately small. Inside a batch every other entry is a distractor, and Jev's documented failure mode #5 is that a large state full of irrelevant detail degrades accuracy. The headroom buys accuracy here, not throughput — cost is negligible either way.
-
-## Limits that shape the design
-
-- 64k tokens per request; 32k for state plus the longest single question
-- Choice takes up to 255 options; Score takes 2–10 ordered levels
-- `$0.042` per Mtok input, output free
-
-## What this does not do
-
-It does not intercept `/compact`, which is internal and unreachable from a skill — the PreCompact hook is the supported seam, and it steers the summariser rather than replacing it. It does not shrink the live context window; no hook can. And it never writes to its input.
+Claude Code uses its own Stop, PreCompact, and SessionStart hook contract. OpenCode plugins add Jev-selected evidence to native compaction context before summarization; check the installed version supports the selected API. OpenCode 2 beta `0.0.0-beta-19157` lacks the required hook and is unsupported even though it can load the plugin. Both OpenCode targets share one plugin and skill, so uninstalling either removes the shared integration. The optional OpenCode 2 response-compaction service is independent and must not be enabled implicitly during setup. Manual compaction can be observed on the next user message. Installation does not rewrite an already-open conversation.
