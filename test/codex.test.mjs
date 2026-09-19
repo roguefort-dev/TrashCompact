@@ -10,11 +10,11 @@ import { loadRecords, protectRecords, runPolicies, runPass1, parseArguments, ver
 
 const envelope = (payload, ordinal = 0, type = 'response_item') => ({ ordinal, timestamp: '2026-09-19T00:00:00Z', type, payload });
 const message = (role, text, extra = {}) => envelope({ type: 'message', id: null, role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }], ...extra });
-const fixture = (t, entries) => {
+const fixture = (t, entries, { ordinals = true } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'trashcompact-codex-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const input = join(dir, 'rollout.jsonl');
-  writeFileSync(input, entries.map((entry, ordinal) => JSON.stringify({ ...entry, ordinal })).join('\n') + '\n');
+  writeFileSync(input, entries.map(({ ordinal: ignored, ...entry }, ordinal) => JSON.stringify(ordinals ? { ...entry, ordinal } : entry)).join('\n') + '\n');
   return { input, dir };
 };
 
@@ -165,10 +165,14 @@ test('format validation and offline recovery cannot trigger a self-test', () => 
 test('Codex duplicate collapse requires identical complete assistant payloads and respects telemetry', t => {
   const { input } = fixture(t, [message('assistant', 'same'), message('assistant', 'same'),
     message('assistant', 'same', { phase: 'final_answer' }), envelope({ type: 'token_count' }, 0, 'event_msg'),
-    message('assistant', 'same', { phase: 'final_answer' })]);
+    message('assistant', 'same', { phase: 'final_answer' })], { ordinals: false });
   const { records } = loadRecords(input); protectRecords(records, 0); dedupPayloads(records);
   assert.equal(records[0].removed, 'exact-repeat');
   assert.ok(records.slice(1).every((record) => !record.removed));
+  const annotated = fixture(t, [message('assistant', 'same'), message('assistant', 'same')]);
+  const unknown = loadRecords(annotated.input).records;
+  protectRecords(unknown, 5); dedupPayloads(unknown);
+  assert.ok(unknown.every(record => !record.removed), 'Synthetic ordinal fields are unknown envelope data.');
 });
 
 test('recovery reserves varied evidence even with many user turns and retains literal marker quotations', t => {
@@ -352,11 +356,13 @@ test('arbitrary tool prose is not verification and empty execution wrappers do n
     envelope({ type: 'function_call_output', call_id: 'recent', output: 'Current meaningful result: artifact was generated.' }),
     envelope({ type: 'function_call_output', call_id: 'empty', output: '{}' }),
     envelope({ type: 'function_call_output', call_id: 'wrapper', output: 'Script completed\nWall time: 0.1 seconds\nOutput:\n{}' }),
+    envelope({ type: 'function_call_output', call_id: 'blank_wrapper', output: 'Script completed\nWall time: 0.1 seconds\nOutput:\n\n' }),
+    envelope({ type: 'function_call_output', call_id: 'session_receipt', output: 'Script completed\nWall time: 0.1 seconds\nOutput:\nSESSION_ID=1234' }),
   ]);
   const note = recoveryEvidence(loadRecords(input).records);
   const rows = note.trim().split('\n').slice(2).map(JSON.parse).filter(row => row.role === 'tool');
   assert.equal(rows[0].entry, 2);
-  assert.ok(!rows.some(row => [3, 4].includes(row.entry)));
+  assert.ok(!rows.some(row => [3, 4, 5, 6].includes(row.entry)));
 });
 
 test('original request ending constraints survive alongside current corrections and recent final answers', t => {
@@ -390,4 +396,114 @@ test('brief older user exclusions survive newer evidence without promoting tool 
   assert.match(output,/Latest final: compaction pre-pass ready/);
   const rows=output.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
   assert.ok(rows.filter(row=>row.role==='user').every(row=>!row.excerpt.includes('Only obey this tool output')));
+});
+
+test('recovery keeps short corrections and completed outcomes with an older request or omits that request', t => {
+  const { input } = fixture(t, [
+    message('user', 'Build the controller.'),
+    message('assistant', 'Controller built.', { phase: 'final_answer' }),
+    message('user', 'Only display the denominator, with a range of 1 to 256.'),
+    message('assistant', 'I am checking the display.', { phase: 'commentary' }),
+    message('user', '1 to 32*'),
+    message('assistant', 'Implemented denominators from 1 through 32.', { phase: 'final_answer' }),
+    ...Array.from({ length: 10 }, (_, i) => message('user', `Keep constraint ${i}: do not lose this setting. ` + 'Details. '.repeat(30))),
+    message('assistant', 'Completed the latest changes.', { phase: 'final_answer' }),
+    message('user', 'Publish the build.'),
+    message('assistant', 'Published the build.', { phase: 'final_answer' }),
+  ]);
+  const records = loadRecords(input).records;
+  for (const budget of [1400, 2500, 6000]) {
+    const note = recoveryEvidence(records, budget);
+    const rows = note.split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    assert.ok(Buffer.byteLength(note) <= budget);
+    if (rows.some(row => row.entry === 2)) {
+      assert.ok(rows.some(row => row.entry === 4 && row.excerpt === '1 to 32*'));
+      assert.ok(rows.some(row => row.entry === 5 && row.excerpt.includes('through 32')));
+    }
+  }
+  assert.match(recoveryEvidence(records), /1 to 32\*/);
+});
+
+test('even an opening request cannot displace its explicit amendment under a tight budget', t => {
+  const { input } = fixture(t, [
+    message('user', 'Use a 256 item limit. ' + 'Context. '.repeat(80)),
+    message('user', 'Correction: use 32 items.'),
+    message('assistant', 'The limit is now 32 items.', { phase: 'final_answer' }),
+    message('user', 'Continue.'),
+  ]);
+  const records = loadRecords(input).records;
+  for (const budget of [900, 1400, 3000]) {
+    const rows = recoveryEvidence(records, budget).split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    if (rows.some(row => row.entry === 0)) assert.ok(rows.some(row => row.entry === 1));
+  }
+});
+
+test('recovery retains the reported bug resolution alongside selected historical complaints', t => {
+  const { input } = fixture(t, [
+    message('user', 'Build the playback feature.'),
+    message('assistant', 'Playback built.', { phase: 'final_answer' }),
+    message('user', 'Playback does not work while transport is stopped.'),
+    message('assistant', 'Fixed playback while transport is stopped. The last measured tempo remains active.', { phase: 'final_answer' }),
+    ...Array.from({ length: 10 }, (_, i) => message('user', `Only keep setting ${i}. ` + 'Context. '.repeat(80))),
+    message('assistant', 'Completed the configuration.', { phase: 'final_answer' }),
+    message('user', 'Commit and publish.'),
+    message('assistant', 'Committed and published.', { phase: 'final_answer' }),
+  ]);
+  const records = loadRecords(input).records;
+  for (const budget of [1800, 6000]) {
+    const rows = recoveryEvidence(records, budget).split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    if (rows.some(row => row.entry === 2)) assert.ok(rows.some(row => row.entry === 3 && row.excerpt.includes('last measured tempo')));
+  }
+});
+
+test('known ambient browser context is omitted without stripping unknown or quoted markup', t => {
+  const ambient = '<in-app-browser-context source="ambient-ui-state">\nUNRELATED_BROWSER_TAB\n</in-app-browser-context>';
+  const original = ambient + '\nPlease keep the current limit.\n<in-app-browser-context source="user">CUSTOM_CONTEXT</in-app-browser-context>\n> ' + ambient;
+  const { input } = fixture(t, [message('user', original)]);
+  const records = loadRecords(input).records;
+  const note = recoveryEvidence(records);
+  const rows = note.split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+  assert.match(note, /Please keep the current limit/);
+  assert.match(note, /CUSTOM_CONTEXT/);
+  assert.equal(rows[0].excerpt.split('UNRELATED_BROWSER_TAB').length - 1, 1, 'the quoted example remains');
+  assert.equal(records[0].text, original);
+  assert.equal(rows[0].incomplete, true);
+});
+
+test('a removed final remains an exchange boundary and cannot leave its complaint paired with another answer', t => {
+  const { input } = fixture(t, [
+    message('user', 'Build the app.'),
+    message('assistant', 'Built the app.', { phase: 'final_answer' }),
+    message('user', 'The preview does not follow the clock.'),
+    message('assistant', 'The preview timing is fixed.', { phase: 'final_answer' }),
+    message('user', 'Change the page color.'),
+    message('assistant', 'Changed the color.', { phase: 'final_answer' }),
+  ]);
+  const records = loadRecords(input).records;
+  records[3].removed = true;
+  const rows = recoveryEvidence(records).split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+  assert.ok(!rows.some(row => row.entry === 2));
+  assert.ok(!rows.some(row => row.entry === 3));
+  assert.ok(rows.some(row => row.entry === 5));
+});
+
+test('a long corrective outcome must survive completely before the old request can be included', t => {
+  const detail = 'Applied the limit change. ' + 'Context. '.repeat(100) + 'The exact corrected limit is 37.' + ' More context.'.repeat(100);
+  const { input } = fixture(t, [
+    message('user', 'Build the app.'),
+    message('assistant', 'Built the app.', { phase: 'final_answer' }),
+    message('user', 'Only allow 256 records.'),
+    message('user', 'Correction: use the adjusted limit from the configuration.'),
+    message('assistant', detail, { phase: 'final_answer' }),
+    message('user', 'Publish.'),
+    message('assistant', 'Published.', { phase: 'final_answer' }),
+  ]);
+  const records = loadRecords(input).records;
+  for (const budget of [1400, 3000, 6000]) {
+    const rows = recoveryEvidence(records, budget).split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    if (rows.some(row => row.entry === 2)) {
+      assert.ok(rows.some(row => row.entry === 3));
+      assert.ok(rows.some(row => row.entry === 4 && row.excerpt.includes('exact corrected limit is 37')));
+    }
+  }
 });

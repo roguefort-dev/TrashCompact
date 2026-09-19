@@ -104,13 +104,16 @@ function boundedExcerpt(text, limit) {
 }
 
 const OMISSION = '\n[... omitted ...]\n';
+// Exact app-owned envelopes only. Unknown tags, quoted markup, and all source
+// records remain untouched. The same cleanup is used before ranking egress.
+export function stripUserBoilerplate(text, replacement = '') {
+  return text.replace(/^[ \t]*<(recommended_plugins|environment_context)>[\s\S]*?<\/\1>/gm, replacement)
+    .replace(/^[ \t]*<in-app-browser-context source=["']ambient-ui-state["']>[\s\S]*?<\/in-app-browser-context>/gm, replacement);
+}
 function userEvidence(record) {
   if (record.role !== 'user') return record.text;
-  // Only complete, line-anchored app envelopes are omitted. Unknown XML and
-  // ordinary surrounding requests retain their original bytes and attribution.
-  const boilerplate = /^[ \t]*<(recommended_plugins|environment_context)>[\s\S]*?<\/\1>/gm;
-  if (!record.text.replace(boilerplate, '').trim()) return '';
-  return record.text.replace(boilerplate, OMISSION);
+  if (!stripUserBoilerplate(record.text).trim()) return '';
+  return stripUserBoilerplate(record.text, OMISSION);
 }
 // This recognizes structure only on a user-authored record. Quoted instructions
 // in tool outputs never acquire the user's priority or attribution.
@@ -168,6 +171,12 @@ const RESULT = /(?:\b\d+\s+(?:tests?|checks?)\s+(?:passed|failed)|\b(?:tests?|ch
 const TOOL_RESULT = /(?:\b\d+\s+(?:tests?|checks?)\s+(?:passed|failed)|^\s*(?:#\s*)?(?:pass|fail|tests)\s+\d+\s*$)/im;
 const DIAGNOSTIC = /(?:^|\n)\s*(?:FAIL(?:ED|URE)?(?::|(?!\s*0(?:\s|$))\s+)|ERROR(?::|\s)|Traceback \(most recent call last\):|(?:Process )?exited with code [1-9]|error:)/i;
 
+// These successful execution envelopes contain only a receipt, not a result.
+// Failure text and any additional output remain eligible as evidence.
+export function isExecutionReceipt(text) {
+  return /^Script completed\nWall time[^\n]*\nOutput:\s*(?:\{\s*\}|SESSION_ID=\d+)?\s*$/.test(text.trim());
+}
+
 function toolEvidence(record, calls) {
   if (record.role !== 'tool') return null;
   const payload = record.entry?.payload;
@@ -190,7 +199,7 @@ function toolEvidence(record, calls) {
     (status && Number(status[1]) !== 0) ||
     (terminal && record.category !== CATEGORY.FILE_READ && DIAGNOSTIC.test(typeof shape?.output === 'string' ? shape.output : output));
   if (!output.trim() || /^\{\s*\}$/.test(output.trim()) ||
-    (!failed && /^Script completed\n[\s\S]*?\nOutput:\s*\{\s*\}\s*$/.test(output.trim())) ||
+    (!failed && isExecutionReceipt(output)) ||
     (receipt && !failed) || (coordination && !failed && /^(?:null|true|message (?:sent|delivered))\s*$/i.test(output.trim()))) return null;
   const measured = record.category !== CATEGORY.FILE_READ && (terminal || status || Number.isInteger(shape?.exit_code)) &&
     TOOL_RESULT.test(typeof shape?.output === 'string' ? shape.output : output);
@@ -241,11 +250,17 @@ export function recoveryEvidence(records, budget = 6000, ranking = null) {
   // Brief user exclusions and corrections can remain relevant long after the
   // latest two turns. Reserve them ahead of optional historical evidence, without
   // promoting similar language from tool output or quoted assistant prose.
-  const explicitBoundary = /\b(?:don['’]t|do\s+not|never|must(?:\s+not)?|only|avoid|instead|without|no\s+\w)/i;
+  const explicitBoundary = /\b(?:don['’]t|do\s+not|never|must(?:\s+not)?|only|avoid|instead|without|not|no\s+\w)/i;
   const constraintTurns = userTurns.filter(record => !sectionFor(record) &&
     Buffer.byteLength(users.get(record) ?? '') <= 1200 && explicitBoundary.test(users.get(record) ?? ''));
-  const priority = [userTurns[0], usable.find(record => sectionFor(record)), originalRequest, latestFinal,
-    userTurns[1], ...constraintTurns,
+  // Conventional standalone edit markers can carry an entire correction in a
+  // few characters. Preserve them even when they contain no constraint keyword.
+  const amendmentTurns = userTurns.filter(record => !sectionFor(record) &&
+    Buffer.byteLength(users.get(record) ?? '') <= 160 &&
+    /(?:^\s*(?:correction\b|\*(?!\*))|[^*]\*\s*$)/i.test(users.get(record) ?? ''));
+  const priority = [userTurns[0], usable.find(record => sectionFor(record)), latestFinal,
+    usable.find((record) => rank(record) === 2), ...recentFinals.slice(1), userTurns[1], originalRequest,
+    ...amendmentTurns.slice(0, 1), ...constraintTurns,
     usable.find((record) => rank(record) === 3), usable.find((record) => rank(record) === 2),
     ...recentFinals.slice(1), summary,
     usable.filter((record) => record.category === CATEGORY.PROSE).sort((a, b) => b.index - a.index)[0]].filter(Boolean);
@@ -260,6 +275,24 @@ export function recoveryEvidence(records, budget = 6000, ranking = null) {
   const mandatory = [...new Set((hasRanking ? [...baselineUsers, ...recentFinals] :
     [userTurns[0], usable.find(record => sectionFor(record)), originalRequest, latestFinal, userTurns[1], ...recentFinals.slice(1)]).filter(Boolean))];
   const ordered = [...new Set([...(hasRanking ? mandatory : priority), ...usable])];
+  // An optional historical request must not lose the corrections or reported
+  // outcome from its own exchange. Use dialogue boundaries, not guesses about
+  // which words mean a correction. Keep the whole bounded group or omit it.
+  const chronological = [...records].sort((a, b) => a.index - b.index);
+  const usableSet = new Set(usable);
+  const companions = new Map();
+  let exchangeUsers = [];
+  for (const record of chronological) {
+    if (record.role === 'user' && users.get(record)?.trim() && !sectionFor(record)) exchangeUsers.push(record);
+    if (record.category === CATEGORY.PROSE &&
+        (record.entry?.payload?.phase === 'final_answer' || record.entry?.payload?.channel === 'final')) {
+      for (let i = 0; i < exchangeUsers.length; i++) {
+        companions.set(exchangeUsers[i], [...exchangeUsers.slice(i + 1).reverse(), record]);
+      }
+      exchangeUsers = [];
+    }
+  }
+  const renderedRecords = new Map();
   const renderedPassages = new Set();
   const rankedEntries = new Set();
   const suppressed = new Map();
@@ -291,17 +324,12 @@ export function recoveryEvidence(records, budget = 6000, ranking = null) {
       if (Buffer.byteLength(output + line) <= budget) { output += line; renderedPassages.add(passage.key); rankedEntries.add(passage.entry); }
     }
   };
-  for (const record of ordered) {
-    if (hasRanking && !mandatory.includes(record)) {
-      if (!insertedRanking) insertRanking();
-      // These optional records are represented by selected source passages. Other
-      // passages from mixed-claim records remain eligible independently.
-      if (rankedEntries.has(record.index)) continue;
-    }
-    if (record.category === CATEGORY.COMPACT_SUMMARY && record !== summary) continue;
+  const renderRecord = (record, complete = false) => {
     const section = sectionFor(record);
     const tool = tools.get(record);
-    const limit = section ? 1200 : record === summary || record === latestFinal ? 1000 : record.category === CATEGORY.HUMAN_INSTRUCTION ? 700 : 500;
+    const limit = section ? 1200 : record === summary || record === latestFinal ? 1000 :
+      record === originalRequest && recentFinals.length >= 3 ? 400 :
+      record.category === CATEGORY.HUMAN_INSTRUCTION ? 700 : 500;
     let source = tool?.output ?? users.get(record) ?? record.text;
     // If no selected passage from this record fit, baseline excerpting still
     // applies. Remove only exact superseded spans, retaining other claims.
@@ -315,18 +343,49 @@ export function recoveryEvidence(records, budget = 6000, ranking = null) {
         offset = end;
       }
       source = remaining + bytes.subarray(offset).toString('utf8');
-      if (!source.replaceAll(OMISSION,'').trim()) continue;
+      if (!source.replaceAll(OMISSION,'').trim()) return null;
     }
     const focus = FAILURE.test(source) ? FAILURE : RESULT;
-    const text = section ? sectionExcerpt(source, section, limit) : tool || recentFinals.includes(record)
-      ? focusedExcerpt(source, limit, focus) : record.category === CATEGORY.HUMAN_INSTRUCTION ? boundedExcerpt(source, limit) : truncateBytes(source, limit);
+    const final = record.entry?.payload?.phase === 'final_answer' || record.entry?.payload?.channel === 'final';
+    const text = complete ? source : section ? sectionExcerpt(source, section, limit) : tool || final
+      ? focusedExcerpt(source, limit, focus) : record.category === CATEGORY.HUMAN_INSTRUCTION
+        ? boundedExcerpt(source, limit) : truncateBytes(source, limit);
     const line = JSON.stringify({ entry: record.index, role: record.role ?? (record.category === CATEGORY.COMPACT_SUMMARY ? 'prior_summary' : 'historical'),
       kind: record.category, ...(tool?.call ? { call: { id: tool.call.id, name: tool.call.name,
         ...(typeof tool.call.input.command === 'string' ? { command: boundedExcerpt(tool.call.input.command, 160),
           incomplete: Buffer.byteLength(tool.call.input.command) > 160 } : {}) } } : {}),
       excerpt: text, incomplete: !!record.normalized || text !== (record.role === 'user' ? record.text : source) }) + '\n';
-    if (Buffer.byteLength(output + line) <= budget) {
+    return { line, text };
+  };
+  for (const record of ordered) {
+    if (hasRanking && !mandatory.includes(record)) {
+      if (!insertedRanking) insertRanking();
+      // These optional records are represented by selected source passages. Other
+      // passages from mixed-claim records remain eligible independently.
+      if (rankedEntries.has(record.index)) continue;
+    }
+    if (record.category === CATEGORY.COMPACT_SUMMARY && record !== summary) continue;
+    if (renderedRecords.has(record.index)) continue;
+    const related = companions.get(record) ?? [];
+    // Removed finals still close an exchange. Their absence must not make an
+    // earlier complaint look unresolved or connect it to an unrelated answer.
+    if (related.some(item => !usableSet.has(item))) continue;
+    // Global instructions and the opening task remain scope anchors. An explicit
+    // amendment still binds even the opening request to its corrected exchange.
+    const protectedRecord = sectionFor(record) ||
+      (record === originalRequest && !related.some(item => amendmentTurns.includes(item)));
+    const required = protectedRecord ? [] : related;
+    // A partial final already rendered is not proof that its corrective detail
+    // survived. In that case omit the old request rather than guess at the gap.
+    if (required.some(item => renderedRecords.has(item.index) &&
+      renderedRecords.get(item.index) !== (users.get(item) ?? item.text))) continue;
+    const group = [...new Set([...required, record])]
+      .filter(item => !renderedRecords.has(item.index));
+    const rendered = group.map(item => ({ record: item, ...renderRecord(item, required.includes(item)) })).filter(item => item.line);
+    if (Buffer.byteLength(output + rendered.map(item => item.line).join('')) > budget) continue;
+    for (const { record, line, text } of rendered) {
       output += line;
+      renderedRecords.set(record.index, text);
       // A protected final may already contain an exact newer passage. Count it
       // only when the full source span survived excerpting, never a partial match.
       if (hasRanking) for (const passage of ranking.passages) {

@@ -63,6 +63,9 @@ test('compaction callbacks enrich native summary with bounded note and clean tem
  try {
   const plugin=createPlugin({temporaryRoot:root,env:{HOME:root},run:async(args,timeout)=>{
    calls.push({args,timeout,raw:await readFile(args[0],'utf8')}); assert.equal((await stat(args[0])).mode & 0o777,0o600);
+   const state = args[args.indexOf('--state') + 1];
+   if (args.includes('--offline')) assert.equal(await readFile(state, 'utf8'), 'scores');
+   else await writeFile(state, 'scores');
    return args.includes('--offline')?note:null;
   }});
   let hook; await plugin.setup({location:{directory:'/project'},session:{hook:async(name,fn)=>{assert.equal(name,'compaction');hook=fn;}}});
@@ -71,7 +74,8 @@ test('compaction callbacks enrich native summary with bounded note and clean tem
   assert.deepEqual(calls.map(c=>c.timeout),[45000,10000]); assert.ok(calls[0].args.includes('--recovery-rank'));
   await assert.rejects(stat(calls[0].args[0]),{code:'ENOENT'});
   const stateA=calls[0].args[calls[0].args.indexOf('--state')+1];
-  await hook({...event,sessionID:'b',system:[]}); assert.notEqual(stateA,calls[2].args[calls[2].args.indexOf('--state')+1]);
+  await assert.rejects(stat(stateA), {code:'ENOENT'});
+  await hook({...event,sessionID:'a',system:[]}); assert.notEqual(stateA,calls[2].args[calls[2].args.indexOf('--state')+1]);
   const v1=await plugin.server({directory:'/project',client:{session:{messages:async(req)=>{assert.equal(req.path.id,'v1');return {data:[{info:{role:'user'},parts:[{type:'text',text:'hello'}]}]};}}}});
   const output={context:['native']}; await v1['experimental.session.compacting']({sessionID:'v1'},output); assert.deepEqual(output.context,['native',note]);
  } finally {await rm(root,{recursive:true,force:true});}

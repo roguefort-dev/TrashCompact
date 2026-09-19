@@ -1,6 +1,6 @@
 #!/bin/sh
 # Hook dispatcher. Codex runs this; it resolves node the same way the CLI does.
-# Usage: trashcompact-hook stop | precompact | sessionstart
+# Usage: trashcompact-hook stop | precompact | postcompact | sessionstart
 set -eu
 
 SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
@@ -9,11 +9,12 @@ ROOT=$(cd "$(dirname "$SELF")/.." && pwd)
 case "${1:-}" in
   stop)       SCRIPT="$ROOT/hooks/on-stop.mjs" ;;
   precompact) SCRIPT="$ROOT/hooks/on-precompact.mjs" ;;
+  postcompact) SCRIPT="$ROOT/hooks/on-postcompact.mjs" ;;
   sessionstart) SCRIPT="$ROOT/hooks/on-sessionstart.mjs" ;;
   claude-stop) SCRIPT="$ROOT/hooks/claude-on-stop.mjs" ;;
   claude-precompact) SCRIPT="$ROOT/hooks/claude-on-precompact.mjs" ;;
   claude-sessionstart) SCRIPT="$ROOT/hooks/claude-on-sessionstart.mjs" ;;
-  *) echo "usage: trashcompact-hook stop|precompact|sessionstart" >&2; exit 2 ;;
+  *) echo "usage: trashcompact-hook stop|precompact|postcompact|sessionstart" >&2; exit 2 ;;
 esac
 
 if command -v node >/dev/null 2>&1; then

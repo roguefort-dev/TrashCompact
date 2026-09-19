@@ -33,6 +33,8 @@ test('configure preserves unrelated mixed hooks and quotes command paths', t => 
   assert.match(settings.hooks.Stop[1].hooks[0].command, /^'.*' stop$/);
   assert.equal(settings.hooks.PreCompact[0].hooks[0].async, undefined);
   assert.equal(settings.hooks.PreCompact[0].hooks[0].timeout, 65);
+  assert.equal(settings.hooks.PostCompact[0].hooks[0].timeout, 5);
+  assert.match(settings.hooks.PostCompact[0].hooks[0].command, / postcompact$/);
   assert.equal(readFileSync(join(f.home, '.claude/settings.json'), 'utf8'), 'untouched');
   assert.match(settings.hooks.PreCompact[0].hooks[0].command, /^'.*' precompact$/);
   assert.equal(statSync(f.settings).mode & 0o777, 0o600);
@@ -42,6 +44,7 @@ test('configure preserves unrelated mixed hooks and quotes command paths', t => 
   settings = JSON.parse(readFileSync(f.settings));
   assert.equal(settings.hooks.Stop.length, 1); assert.equal(settings.hooks.PreCompact, undefined);
   assert.equal(settings.hooks.SessionStart, undefined);
+  assert.equal(settings.hooks.PostCompact, undefined);
 });
 test('malformed settings are not rewritten', t => {
   const f = fixture(t); writeFileSync(f.settings, '{broken');
@@ -65,6 +68,7 @@ test('Claude install merges only owned hooks and leaves Codex unchanged', t => {
   assert.equal(f.run('configure.mjs', '--target', 'claude').status, 0);
   const value = JSON.parse(readFileSync(path));
   assert.deepEqual(value.permissions, { allow: ['Read'] });
+  assert.equal(value.hooks.PostCompact, undefined);
   assert.equal(value.hooks.Stop.length, 2);
   assert.equal(value.hooks.Stop[1].hooks[0].async, true);
   for (const event of ['Stop', 'PreCompact', 'SessionStart']) {

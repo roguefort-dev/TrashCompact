@@ -93,6 +93,17 @@ export function imageBytes(value) {
   return total;
 }
 
+// Unknown fields can carry context even when the visible text is empty or repeated.
+export function isPlainAssistant(entry) {
+  const known = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
+  return entry.type === 'assistant' && !entry.isCompactSummary && !entry.isSidechain && !entry.isMeta &&
+    known(entry, ['type','uuid','parentUuid','timestamp','sessionId','version','cwd','userType','isSidechain','isMeta','requestId','message','gitBranch','isCompactSummary']) &&
+    known(entry.message, ['id','type','role','model','content','stop_reason','stop_sequence','usage']) &&
+    (entry.message.role == null || entry.message.role === 'assistant') &&
+    (typeof entry.message.content === 'string' || Array.isArray(entry.message.content) && entry.message.content.every(block =>
+      known(block, ['type','text']) && block.type === 'text' && typeof block.text === 'string'));
+}
+
 /**
  * Classify one entry.
  *
@@ -115,8 +126,8 @@ export function classify(entry, toolByUseId = new Map()) {
     return { ...record, category: CATEGORY.TOOL_OUTPUT, text: text || JSON.stringify(entry), pinned: true };
   }
   if (content == null) return { ...record, category: CATEGORY.TOOL_OUTPUT, text: JSON.stringify(entry), pinned: true };
-  if (!blocks.length || blocks.every((block) => typeof block === "string" ? !block.trim()
-      : block?.type === "text" && typeof block.text === "string" && !block.text.trim())) return base;
+  if (isPlainAssistant(entry) && (!blocks.length || blocks.every((block) => typeof block === "string" ? !block.trim()
+      : !block.text.trim()))) return base;
 
   const results = blocks.filter((block) => block?.type === "tool_result");
   const calls = blocks.filter((block) => block?.type === "tool_use");
@@ -155,18 +166,19 @@ export function classify(entry, toolByUseId = new Map()) {
     return { ...record, category, paths: [...new Set(paths)], supersedeKey: id ? `call:${id}` : null,
       pinned: blocks.length > 1 || images > 0 };
   }
-  if (pureText) return { ...record, category: CATEGORY.PROSE };
+  if (pureText) return isPlainAssistant(entry) ? { ...record, category: CATEGORY.PROSE }
+    : { ...record, category: CATEGORY.TOOL_OUTPUT, pinned: true };
   if (blocks.every((block) => block?.type === "thinking" || block?.type === "redacted_thinking"))
     return { ...record, category: CATEGORY.THINKING, pinned: true };
   if (blocks.every((block) => block?.type === "image")) return { ...record, category: CATEGORY.MEDIA, pinned: true };
   return { ...record, category: CATEGORY.TOOL_OUTPUT, pinned: true };
 }
 
-/** Drop only explicitly local metadata and empty content, outside the protected tail. */
-export function applyPolicies(classified, { keepTail = 0, total = classified.length } = {}) {
+/** Proven local metadata and empty content remain removable in recent records. */
+export function applyPolicies(classified) {
   const drop = new Map();
   classified.forEach((item, index) => {
-    if (index >= total - keepTail || item.pinned || item.protected) return;
+    if (item.pinned || (item.hardProtected ?? item.protected)) return;
     if (item.category === CATEGORY.LOCAL_ONLY || item.category === CATEGORY.EMPTY) drop.set(index, item.category);
   });
   return drop;

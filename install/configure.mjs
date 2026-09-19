@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Merge (or remove) the TrashCompact hooks in ~/.codex/hooks.json.
 //
-// Only ever touches the three hook entries it owns: everything else in the file is
+// Only ever touches the hook entries it owns: everything else in the file is
 // read, preserved, and written back untouched. Validate and write atomically
 // so unrelated hook configuration remains intact.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, statSync, mkdtempSync, rmSync } from "node:fs";
@@ -49,6 +49,14 @@ const entries = {
   },
 };
 
+if (target === 'codex') {
+  entries.PostCompact = { hooks: [{
+    type: 'command',
+    timeout: 5,
+    statusMessage: 'TrashCompact: resetting scores after compaction',
+  }] };
+}
+
 if (target === 'claude') {
   for (const [event, entry] of Object.entries(entries)) {
     const hook = entry.hooks[0];
@@ -64,7 +72,7 @@ for (const [event, entry] of Object.entries(entries)) {
 
 // Exact commands from this installation only; a substring is not ownership.
 const owned = new Set(Object.values(entries).map(entry => entry.hooks[0].command));
-for (const [mode, script] of [['stop', 'on-stop.mjs'], ['precompact', 'on-precompact.mjs'], ['sessionstart', 'on-sessionstart.mjs']]) {
+for (const [mode, script] of [['stop', 'on-stop.mjs'], ['precompact', 'on-precompact.mjs'], ['postcompact', 'on-postcompact.mjs'], ['sessionstart', 'on-sessionstart.mjs']]) {
   const dispatcher = join(ROOT, 'bin', 'trashcompact-hook');
   const dispatchMode = target === 'claude' ? `claude-${mode}` : mode;
   owned.add(`${quote(dispatcher)} ${dispatchMode}`);
@@ -123,4 +131,4 @@ try {
   renameSync(staging, SETTINGS);
 } finally { rmSync(temporary, { recursive: true, force: true }); }
 
-console.log(`${remove ? 'removed' : 'wired'} ${target} Stop, PreCompact and SessionStart hooks${!remove && target === 'codex' ? '; review and trust them using /hooks' : ''}`);
+console.log(`${remove ? 'removed' : 'wired'} ${target} ${Object.keys(entries).join(', ')} hooks${!remove && target === 'codex' ? '; review and trust them using /hooks' : ''}`);

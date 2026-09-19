@@ -257,3 +257,29 @@ test('same command in distinct or unknown directories cannot supersede tool evid
   assert.equal(prepareRecoveryRanking([...data,...unknown],opts).pairs.length,0);
   assert.equal(prepareRecoveryRanking(unknown,opts).candidates[0].commandKey,null);
 });
+
+test('ranking removes only known ambient browser envelopes before query egress and cache identity', async () => {
+  const browser = label => `<in-app-browser-context source="ambient-ui-state">\n${label}\n</in-app-browser-context>\n`;
+  const data = records([msg('user', browser('PRIVATE_TAB_A') + 'Check playback.'), msg('assistant', 'Playback fixed while stopped.')]);
+  const prepared = prepareRecoveryRanking(data, opts), requests = [];
+  const cache = await scoreRecoveryRanking(client(requests), sdk, prepared, usage());
+  assert.equal(prepared.query, 'Check playback.');
+  assert.ok(!JSON.stringify(requests).includes('PRIVATE_TAB_A'));
+  const changed = records([msg('user', browser('PRIVATE_TAB_B') + 'Check playback.'), msg('assistant', 'Playback fixed while stopped.')]);
+  assert.ok(prepareRecoveryRanking(changed, opts, cache).candidates.every(candidate => candidate.verdict));
+  const unknown = prepareRecoveryRanking(records([msg('user', '<in-app-browser-context source="user">Keep this context.</in-app-browser-context>'), msg('assistant', 'Done.')]), opts);
+  assert.match(unknown.query, /Keep this context/);
+});
+
+test('empty execution and session receipts are excluded before ranking without hiding failed output', async () => {
+  const data = records([msg('user', 'Check playback.'),
+    tool('Script completed\nWall time 0.1 seconds\nOutput:\n\n'),
+    tool('Script completed\nWall time 0.1 seconds\nOutput:\nSESSION_ID=987654'),
+    tool('Script completed\nWall time 0.1 seconds\nOutput:\nERROR: playback failed'),
+  ]);
+  const prepared = prepareRecoveryRanking(data, opts), requests = [];
+  await scoreRecoveryRanking(client(requests), sdk, prepared, usage());
+  assert.ok(!prepared.candidates.some(candidate => [1, 2].includes(candidate.entry)));
+  assert.ok(prepared.candidates.some(candidate => candidate.text.includes('playback failed')));
+  assert.ok(!JSON.stringify(requests).includes('SESSION_ID=987654'));
+});

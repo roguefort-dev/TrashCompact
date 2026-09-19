@@ -14,7 +14,7 @@ function fixture(t) {
   for (const dir of ['hooks', 'bin', 'src']) cpSync(join(root, dir), join(home, dir), { recursive: true });
   const transcript = join(home, 'conversation.jsonl');
   writeFileSync(transcript, [msg('user', 'Keep the API contract stable. Pending: repair cache.'), msg('assistant', [{ type: 'text', text: 'Diagnosis: cache identity mismatch remains unresolved.' }])].map(JSON.stringify).join('\n') + '\n');
-  const run = (mode, overrides = {}) => spawnSync(process.execPath, [join(home, `hooks/claude-on-${mode}.mjs`)], { input: JSON.stringify({ session_id: 'claude-session', transcript_path: transcript, source: 'compact', ...overrides }), encoding: 'utf8', env: { ...process.env, HOME: home, CODEX_HOME: join(home, 'custom-codex'), TRASHCOMPACT_ENV: join(home, 'missing'), TYPESAFE_API_KEY: '', TRASHCOMPACT_FLAGS: '' } });
+  const run = (mode, overrides = {}, flags = '') => spawnSync(process.execPath, [join(home, `hooks/claude-on-${mode}.mjs`)], { input: JSON.stringify({ session_id: 'claude-session', transcript_path: transcript, source: 'compact', ...overrides }), encoding: 'utf8', env: { ...process.env, HOME: home, CODEX_HOME: join(home, 'custom-codex'), TRASHCOMPACT_ENV: join(home, 'missing'), TYPESAFE_API_KEY: '', TRASHCOMPACT_FLAGS: flags } });
   return { home, transcript, run };
 }
 test('Claude lifecycle uses isolated caches, remains quiet and delivers recovery once', t => {
@@ -53,4 +53,23 @@ test('Claude recovery attributes plain tool results correctly and excludes hidde
   f.run('precompact'); const output = f.run('sessionstart').stdout;
   assert.ok(output.includes('Tool failure evidence'));
   for (const excluded of ['PRIVATE_THINKING', 'MIXED_HIDDEN', 'OPAQUE_IMAGE', 'PRIVATE_SIDECHAIN', 'PRIVATE_META', 'UNKNOWN_SCHEMA']) assert.ok(!output.includes(excluded));
+});
+
+test('Claude explicit state override is used by Stop and native completion', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const f = fixture(t), path = join(f.home, 'custom scores.json'), flags = `--state "${path}"`;
+  const audit = join(f.home, 'args.json');
+  writeFileSync(join(f.home, 'bin/launch.mjs'), `import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(audit)},JSON.stringify(process.argv.slice(2)));`);
+  f.run('stop', {}, flags);
+  const args = JSON.parse(readFileSync(audit));
+  assert.equal(args.filter(arg => arg === '--state').length, 1);
+  assert.equal(args[args.indexOf('--state') + 1], path);
+  const old = openState(path, loadRecords(f.transcript, { format: 'claude' }).epoch);
+  old.verdicts.old = {}; saveState(path, old);
+  f.run('sessionstart', {}, flags);
+  assert.deepEqual(loadState(path).verdicts, {});
+  const fresh = openState(path, loadRecords(f.transcript, { format: 'claude' }).epoch);
+  fresh.verdicts.new = {}; saveState(path, fresh);
+  f.run('sessionstart', {}, flags);
+  assert.ok(loadState(path).verdicts.new);
 });

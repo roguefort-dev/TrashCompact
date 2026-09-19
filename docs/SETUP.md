@@ -1,6 +1,6 @@
 # Agent-assisted setup
 
-Start with the prompt for your harness in [the README](../README.md). Setup supports Windows, Linux, and macOS with Node.js 20+, Git, and npm. Use PowerShell on Windows.
+Start with the prompt for your harness in [the README](../README.md). Setup requires Node.js 20+, Git, and npm. Tested on Linux. Windows and macOS should work but remain untested. Please submit a [pull request](https://github.com/roguefort-dev/TrashCompact) with fixes if you encounter issues. Use PowerShell on Windows.
 
 ## Choose the target
 
@@ -15,15 +15,16 @@ Start with the prompt for your harness in [the README](../README.md). Setup supp
 
 These steps are for the installing agent.
 
-1. Confirm the application and compatible version. Install missing prerequisites through an authorized user-scoped method. Report any blocker that needs privileges.
-2. Use a persistent checkout at `~/.local/share/trashcompact`. If it exists, inspect its origin and working tree. Reuse a matching checkout, preserve local changes, and update only when a clean fast-forward is appropriate. Never overwrite an unrelated directory.
-3. If the checkout is absent, create it:
+1. Install the [TypeSafe agent skill](https://docs.typesafe.ai/agent-skill#installation) globally for the selected application, reusing an existing installation, and read it before continuing.
+2. Confirm the application and compatible version. Install missing prerequisites through an authorized user-scoped method. Report any blocker that needs privileges.
+3. Use a persistent checkout at `~/.local/share/trashcompact`. If it exists, inspect its origin and working tree. Reuse a matching checkout, preserve local changes, and update only when a clean fast-forward is appropriate. Never overwrite an unrelated directory.
+4. If the checkout is absent, create it:
 
    ```sh
    git clone https://github.com/roguefort-dev/TrashCompact.git "$HOME/.local/share/trashcompact"
    ```
 
-4. Read its instructions, then install dependencies and the integration. Replace `TARGET` with the target above:
+5. Read its instructions, then install dependencies and the integration. Replace `TARGET` with the target above:
 
    ```sh
    cd "$HOME/.local/share/trashcompact"
@@ -32,6 +33,8 @@ These steps are for the installing agent.
    ```
 
    The installer preserves unrelated settings. It does not enter a key or approve platform trust.
+
+6. Offer update checks once during installation, unless `~/.trashcompact/updates/config.json` already records an `enabled` boolean. Preserve either saved choice on reinstall. Ask: "Do you want me to enable update checks? They run during the first successful online Jev scoring pass of the day, at a completed turn or compaction. No background services are necessary." This means the first successful incremental `--update` pass per local calendar day. Use `node /absolute/path/to/trashcompact/bin/updates.mjs enable` only after a yes or existing explicit authorization. For a no, use the same command with `disable` to save the choice. With no answer, leave checks off and continue setup. Use the actual checkout path and quote it if needed. Checks never install updates automatically.
 
 Automatic scoring sends eligible assistant prose to TypeSafe. At compaction it also sends bounded assistant passages, the latest-user query, and source context. Codex and supported OpenCode integrations include bounded tool passages; Claude keeps tool results local. The README prompts authorize this processing. For other requests, explain this scope and obtain any missing authorization before enabling it.
 
@@ -51,7 +54,7 @@ For Codex, give the human this command with their actual project path:
 codex -C /absolute/path/to/their/project
 ```
 
-Inside that terminal CLI, they run `/hooks` and review the TrashCompact Stop, PreCompact, and SessionStart hooks. `/hooks` in a desktop chat does not open this interface. Do not bypass trust review.
+Inside that terminal CLI, they run `/hooks` and review the TrashCompact Stop, PreCompact, PostCompact, and SessionStart hooks. `/hooks` in a desktop chat does not open this interface. Do not bypass trust review.
 
 Restart your harness to load the integration. Follow any approval Claude Code displays. Report the installed target, configuration location, and remaining human steps.
 
@@ -82,3 +85,5 @@ node install.mjs --target TARGET --uninstall --non-interactive
 Restart your harness afterward. Removal preserves unrelated settings, the key, caches, and recovery data. OpenCode targets share one plugin and skill; removing either removes both integrations.
 
 The optional [OpenCode 2 response companion](../opencode2/README.md) is Linux-only and has separate setup and removal instructions. The ordinary installer does not enable it.
+
+Stop reuses judgments between turns; native compaction expires them for fresh scoring. See [cache behavior](CLI.md#retention-and-cache-behavior).

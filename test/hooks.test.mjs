@@ -19,12 +19,13 @@ function run(dir, mode, input, flags = '') {
   return spawnSync(process.execPath, [join(dir, `hooks/on-${mode}.mjs`)], { input, encoding: 'utf8', env: { ...process.env, HOME: dir, CODEX_HOME: join(dir, '.codex'), TRASHCOMPACT_FLAGS: flags } });
 }
 test('literal hook flags accept quoted values and reject action flags', () => {
+  assert.deepEqual(hookFlags('--relevance --recovery-rank'), ['--relevance', '--recovery-rank']);
   assert.deepEqual(hookFlags('--state "/tmp/a b" --keep-tail 40'), ['--state', '/tmp/a b', '--keep-tail', '40']);
   for (const flag of ['--self-test', '--update', '--full-log', '--out x', '--plan', '--format claude', '--recovery', '--state "broken']) assert.throws(() => hookFlags(flag));
 });
 test('malformed hook input and unavailable launcher silently fail open', t => {
   const dir = fixture(t);
-  for (const mode of ['stop', 'precompact', 'sessionstart']) for (const input of ['{', 'null', '{"transcript_path":3}', '{"transcript_path":"/tmp/log"}']) {
+  for (const mode of ['stop', 'precompact', 'postcompact', 'sessionstart']) for (const input of ['{', 'null', '{"transcript_path":3}', '{"transcript_path":"/tmp/log"}']) {
     const result = run(dir, mode, input);
     assert.equal(result.status, 0); assert.equal(result.stdout, ''); assert.equal(result.stderr, '');
   }

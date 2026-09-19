@@ -28,7 +28,7 @@ export function hookFlags(raw) {
   const args = splitFlags(raw);
   const allowed = new Set(['--keep-tail', '--threshold', '--min-confidence', '--batch', '--chars', '--model', '--state']);
   for (let i = 0; i < args.length;) {
-    if (args[i] === '--recovery-rank') { i++; continue; }
+    if (args[i] === '--recovery-rank' || args[i] === '--relevance') { i++; continue; }
     if (!allowed.has(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Unsupported hook flag');
     i += 2;
   }
@@ -38,11 +38,20 @@ export function hookFlags(raw) {
 // PreCompact plain stdout is ignored by Codex. Stage a private, single-use note for
 // SessionStart(compact), the lifecycle event that can add model context.
 const MAX_NOTE_BYTES = 6000;
-const MAX_AGE_MS = 10 * 60 * 1000;
 const digest = value => createHash('sha256').update(value).digest('hex');
+const configurationFor = flags => digest(JSON.stringify({ lifecycle: 4, flags }));
+const isMarker = (record, format) => format === 'codex' ? record.entry.type === 'compacted' :
+  record.entry.type === 'system' && record.entry.subtype === 'compact_boundary' || record.entry.isCompactSummary === true;
+function matchesBoundary(snapshot, bytes, records, epoch, configuration, format) {
+  return snapshot?.configuration === configuration && Number.isSafeInteger(snapshot.bytes) && snapshot.bytes >= 0 &&
+    Number.isSafeInteger(snapshot.markers) && snapshot.markers >= 0 &&
+    records.filter(record => isMarker(record, format)).length >= snapshot.markers &&
+    snapshot.bytes <= bytes.length && digest(bytes.subarray(0, snapshot.bytes)) === snapshot.boundary &&
+    records.filter(record => isMarker(record, format)).length - snapshot.markers <= 1 &&
+    (snapshot.completedEpoch == null || snapshot.completedEpoch === epoch);
+}
 function validSnapshot(snapshot, identity) {
   return typeof snapshot?.note === 'string' && snapshot.note.startsWith('[TrashCompact recovery context]') &&
-    Number.isFinite(snapshot.created) && snapshot.created <= Date.now() && Date.now() - snapshot.created <= MAX_AGE_MS &&
     JSON.stringify(snapshot.identity) === JSON.stringify(identity) && Buffer.byteLength(snapshot.note) <= MAX_NOTE_BYTES;
 }
 async function deliverContext(note) {
@@ -102,6 +111,8 @@ export function runCli(args, timeoutMs = 25000, launcher = join(dirname(dirname(
 export async function runHook(mode, { format = 'codex' } = {}) {
   let lock;
   try {
+    const { completeCompaction, loadState: loadScoringState } = await import('../src/scoring-state.mjs');
+    const { loadRecords, parseArguments } = await import('../src/filter-transcript.mjs');
     process.stdin.setEncoding('utf8');
     let raw = '';
     for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 1024 * 1024) return; }
@@ -110,10 +121,23 @@ export async function runHook(mode, { format = 'codex' } = {}) {
     if (mode === 'sessionstart' && input.source !== 'compact') return;
     if (mode === 'stop' && input.stop_hook_active) return;
     const stateHome = format === 'claude' ? join(process.env.HOME || homedir(), '.claude', 'trashcompact') : join(process.env.CODEX_HOME || join(process.env.HOME || homedir(), '.codex'), 'trashcompact');
-    const stateFlags = transcript => format === 'claude' ? ['--state', join(stateHome, `${digest(transcript)}.json`)] : [];
+    const stateFlags = transcript => format === 'claude' && !hookFlags(process.env.TRASHCOMPACT_FLAGS ?? '').includes('--state') ? ['--state', join(stateHome, `${digest(transcript)}.json`)] : [];
+    const pendingPath = join(stateHome, 'recovery', `${digest(input.session_id)}.json`);
+    const reconcile = async (transcript, pending) => {
+      if (!pending) return;
+      const extra = hookFlags(process.env.TRASHCOMPACT_FLAGS ?? '');
+      const options = parseArguments([transcript, ...extra, ...stateFlags(transcript), '--format', format]);
+      const target = pending.state ?? options.state;
+      const initialState = loadScoringState(target);
+      if (initialState.completion === pending.completion) return;
+      const { epoch } = loadRecords(transcript, { format });
+      completeCompaction(target, epoch, pending.completion,
+        pending.hasMarker || epoch !== pending.epoch, initialState);
+    };
     if (mode === 'stop') {
       if (typeof input.transcript_path !== 'string' || !input.transcript_path.trim()) return;
       const transcript = await realpath(resolve(input.transcript_path));
+      await reconcile(transcript, (await readState(pendingPath))?.pending);
       const extra = hookFlags(process.env.TRASHCOMPACT_FLAGS ?? '');
       await runCli([transcript, ...extra, ...stateFlags(transcript), '--format', format, '--update'], 110000);
       return;
@@ -133,24 +157,45 @@ export async function runHook(mode, { format = 'codex' } = {}) {
     }
     lock = lockPath;
     const previous = await readState(path);
-    if (mode === 'precompact' || mode === 'sessionstart') {
+    if (mode === 'precompact' || mode === 'sessionstart' || mode === 'postcompact') {
       // Invalidate before any operation that can fail, including path resolution,
       // flags, child execution, or checking a changed transcript identity.
-      await atomicState(path, { boundary: previous?.boundary });
+      await atomicState(path, { boundary: previous?.boundary, epoch: previous?.epoch, pending: previous?.pending });
     }
     if (typeof input.transcript_path !== 'string' || !input.transcript_path.trim()) return;
     const transcript = await realpath(resolve(input.transcript_path));
     const info = await stat(transcript);
     const identity = { session: input.session_id, transcript, dev: info.dev, ino: info.ino };
-    if (mode === 'sessionstart') {
-      if (!validSnapshot(previous, identity)) return;
+    if (mode === 'sessionstart' || mode === 'postcompact') {
+      const extra = hookFlags(process.env.TRASHCOMPACT_FLAGS ?? '');
+      const options = parseArguments([transcript, ...extra, ...stateFlags(transcript), '--format', format]);
+      const initialState = loadScoringState(options.state);
+      const { epoch, records } = loadRecords(transcript, { format });
+      const hasMarker = records.some(record => isMarker(record, format));
+      const completion = digest(JSON.stringify([epoch, previous?.boundary ?? (hasMarker ? epoch : digest(await readFile(transcript)))]));
+      const pending = { state: options.state, epoch, completion, hasMarker: hasMarker && previous?.epoch !== epoch };
+      // Persist the reset obligation before trying the short cache transaction.
+      // A contending Stop must reconcile it before reusing any judgments.
+      await atomicState(path, { boundary: previous?.boundary, epoch: previous?.epoch, pending });
+      try { completeCompaction(options.state, epoch, completion, pending.hasMarker, initialState); }
+      catch { /* Keep the pending reset for the next hook, but still deliver the note. */ }
+      if (!validSnapshot(previous, identity) ||
+          !matchesBoundary(previous, await readFile(transcript), records, epoch, configurationFor(extra), format)) return;
+      if (mode === 'postcompact') {
+        // PostCompact cannot inject model context. Bind and retain the note until
+        // SessionStart(compact) runs before the next model request.
+        await atomicState(path, { ...previous, pending, completedEpoch: epoch });
+        return;
+      }
       await deliverContext(previous.note);
       return;
     }
     const extra = hookFlags(process.env.TRASHCOMPACT_FLAGS ?? '');
     if (mode !== 'precompact') return;
-    const boundary = digest(await readFile(transcript));
-    const configuration = digest(JSON.stringify({ lifecycle: 3, flags: extra }));
+    await reconcile(transcript, previous?.pending);
+    const transcriptBytes = await readFile(transcript);
+    const boundary = digest(transcriptBytes);
+    const configuration = configurationFor(extra);
     if (previous?.boundary === boundary) {
       // A duplicate before consumption keeps the exact pending note. We still
       // invalidate first so invalid paths or flags cannot retain stale context.
@@ -162,14 +207,16 @@ export async function runHook(mode, { format = 'codex' } = {}) {
       // Changed valid flags require a fresh successful render, never reuse.
     }
     // Remember attempted boundaries too: a failed refresh cannot revive an old note.
-    await atomicState(path, { boundary });
+    const { epoch, records } = loadRecords(transcript, { format });
+    const markers = records.filter(record => isMarker(record, format)).length;
+    await atomicState(path, { boundary, epoch });
     const rankingFlags = extra.filter(flag => flag !== '--recovery-rank');
     // This synchronous pre-pass runs only at a real compaction boundary. Failure
     // or timeout leaves compaction free to continue with an offline fallback.
     await runCli([transcript, ...rankingFlags, ...stateFlags(transcript), '--format', format, '--update', '--recovery-rank'],45000);
     const note = await runCli([transcript, ...rankingFlags, ...stateFlags(transcript), '--format', format, '--recovery', '--recovery-rank', '--offline'],10000);
     if (!note?.startsWith('[TrashCompact recovery context]') || Buffer.byteLength(note) > MAX_NOTE_BYTES) return;
-    await atomicState(path, { boundary, identity, configuration, created: Date.now(), note: note.trim() });
+    await atomicState(path, { boundary, epoch, bytes: transcriptBytes.length, markers, identity, configuration, created: Date.now(), note: note.trim() });
   } catch { /* Hooks always fail open without exposing transcript or credential errors. */ }
   finally { if (lock) await rm(lock, { recursive: true, force: true }).catch(() => {}); }
 }

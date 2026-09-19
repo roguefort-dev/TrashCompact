@@ -10,6 +10,7 @@ const note = '[TrashCompact recovery context]\nEarlier task evidence, subordinat
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'trashcompact-codex-hooks-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(join(root, 'src'), join(dir, 'src'), { recursive: true });
   cpSync(join(root, 'hooks'), join(dir, 'hooks'), { recursive: true });
   mkdirSync(join(dir, 'bin'));
   const transcript = join(dir, 'rollout.jsonl');
@@ -59,10 +60,10 @@ test('session identity, null transcript, subagents and duplicate boundaries fail
   assert.ok(f.run('sessionstart'));
   assert.equal(f.run('precompact'), '');
   assert.equal(f.run('sessionstart'), '');
-  appendFileSync(f.transcript, 'new boundary\n'); f.run('precompact');
+  appendFileSync(f.transcript, JSON.stringify({ type: 'event_msg', payload: { text: 'new boundary' } }) + '\n'); f.run('precompact');
   assert.equal(f.run('sessionstart', { transcript_path: null }), '');
   assert.equal(f.run('sessionstart'), '');
-  appendFileSync(f.transcript, 'next boundary\n'); f.run('precompact');
+  appendFileSync(f.transcript, JSON.stringify({ type: 'event_msg', payload: { text: 'next boundary' } }) + '\n'); f.run('precompact');
   const other = join(f.dir, 'other.jsonl'); writeFileSync(other, 'other');
   assert.equal(f.run('sessionstart', { transcript_path: other }), '');
   assert.equal(f.run('sessionstart'), '');
@@ -70,17 +71,17 @@ test('session identity, null transcript, subagents and duplicate boundaries fail
 test('failed or invalid refresh never reinjects an old snapshot', t => {
   const f = fixture(t);
   for (const [output, exitCode, flags, path] of [[note, 1, '', f.transcript], ['garbage', 0, '', f.transcript], [note + 'é'.repeat(4000), 0, '', f.transcript], [note, 0, '--format claude', f.transcript], [note, 0, '', null]]) {
-    appendFileSync(f.transcript, 'first boundary\n'); f.stub(); f.run('precompact');
-    appendFileSync(f.transcript, 'second boundary\n'); f.stub(output, exitCode);
+    appendFileSync(f.transcript, JSON.stringify({ type: 'event_msg', payload: { text: 'first boundary' } }) + '\n'); f.stub(); f.run('precompact');
+    appendFileSync(f.transcript, JSON.stringify({ type: 'event_msg', payload: { text: 'second boundary' } }) + '\n'); f.stub(output, exitCode);
     assert.equal(f.run('precompact', { transcript_path: path }, flags), '');
     assert.equal(f.run('sessionstart'), '');
   }
 });
-test('expired notes are consumed without injection', t => {
+test('delayed notes survive until the matching completed compaction', t => {
   const f = fixture(t); f.run('precompact');
   const path = f.snapshot(), state = JSON.parse(readFileSync(path));
   state.created = Date.now() - 11 * 60 * 1000; writeFileSync(path, JSON.stringify(state));
-  assert.equal(f.run('sessionstart'), '');
+  assert.equal(JSON.parse(f.run('sessionstart')).hookSpecificOutput.additionalContext, note);
   assert.equal(JSON.parse(readFileSync(path)).note, undefined);
 });
 test('real offline CLI lifecycle preserves latest unscored Codex evidence without credentials', t => {
@@ -141,4 +142,164 @@ test('bounded CLI timeout terminates a child that ignores SIGTERM and returns fa
   const start=Date.now();
   assert.equal(await runCli([],150,launcher),null);
   assert.ok(Date.now()-start<5000);
+});
+
+test('confirmed native completion clears the selected cache and keeps the prepared note; duplicate preserves rebuilt scores', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const { loadRecords } = await import('../src/filter-transcript.mjs');
+  const f = fixture(t), path = join(f.dir, 'chosen-scores.json'), flags = `--state "${path}"`;
+  const old = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  old.verdicts.old = {}; old.recoveryRank = { passages: { old: {} }, relations: {} }; saveState(path, old);
+  f.run('precompact', {}, flags);
+  assert.ok(loadState(path).verdicts.old);
+  appendFileSync(f.transcript, '{"type":"compacted","payload":{"message":"native rewrite"}}\n');
+  assert.equal(JSON.parse(f.run('sessionstart', {}, flags)).hookSpecificOutput.additionalContext, note);
+  assert.deepEqual(loadState(path).verdicts, {}); assert.equal(loadState(path).recoveryRank, undefined);
+  const rebuilt = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  rebuilt.verdicts.fresh = {}; saveState(path, rebuilt);
+  assert.equal(f.run('sessionstart', {}, flags), '');
+  assert.ok(loadState(path).verdicts.fresh);
+  assert.throws(() => saveState(path, old), /changed after native compaction/);
+  // A second confirmed compaction can keep the same visible marker.
+  appendFileSync(f.transcript, '{"type":"event_msg","payload":{"text":"next turn"}}\n');
+  f.run('precompact', {}, flags); f.run('sessionstart', {}, flags);
+  assert.deepEqual(loadState(path).verdicts, {});
+});
+test('SessionStart clears scores even when recovery note preparation failed', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const { loadRecords } = await import('../src/filter-transcript.mjs');
+  const f = fixture(t), path = join(f.dir, 'scores.json'), flags = `--state "${path}"`;
+  const old = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  old.verdicts.old = {}; saveState(path, old);
+  f.stub('', 1); f.run('precompact', {}, flags);
+  assert.ok(loadState(path).verdicts.old);
+  assert.equal(f.run('sessionstart', {}, flags), '');
+  assert.deepEqual(loadState(path).verdicts, {});
+});
+
+test('a held scoring lock cannot lose a recovery note; pending markerless reset blocks Stop until it succeeds', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const { loadRecords } = await import('../src/filter-transcript.mjs');
+  const f = fixture(t), path = join(f.dir, 'scores.json'), flags = `--state "${path}"`;
+  const old = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  old.verdicts.old = {}; saveState(path, old);
+  f.run('precompact', {}, flags);
+  mkdirSync(`${path}.lock`);
+  assert.equal(JSON.parse(f.run('sessionstart', {}, flags)).hookSpecificOutput.additionalContext, note);
+  assert.ok(loadState(path).verdicts.old);
+  assert.ok(JSON.parse(readFileSync(f.snapshot())).pending);
+  writeFileSync(f.log, 'not launched');
+  f.run('stop', {}, flags);
+  assert.equal(readFileSync(f.log, 'utf8'), 'not launched');
+  assert.equal(f.run('sessionstart', {}, flags), '');
+  rmSync(`${path}.lock`, { recursive: true });
+  f.run('stop', {}, flags);
+  assert.deepEqual(loadState(path).verdicts, {});
+  assert.ok(JSON.parse(readFileSync(f.log)).includes('--update'));
+  const rebuilt = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  rebuilt.verdicts.new = {}; saveState(path, rebuilt);
+  f.run('stop', {}, flags);
+  assert.ok(loadState(path).verdicts.new);
+});
+
+test('generation changes during completion preserve delivery and reconcile before the next Stop', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const { loadRecords } = await import('../src/filter-transcript.mjs');
+  const f = fixture(t), path = join(f.dir, 'scores.json'), flags = `--state "${path}"`;
+  const old = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  old.verdicts.old = {}; saveState(path, old);
+  f.run('precompact', {}, flags);
+  // Deterministically insert another generation between the hook's source read
+  // and its compare-and-swap, using only this fixture's copied cache module.
+  const modulePath = join(f.dir, 'src/scoring-state.mjs'), once = join(f.dir, 'race-once');
+  const source = readFileSync(modulePath, 'utf8');
+  writeFileSync(modulePath, source.replace('export function completeCompaction(path, epoch, completion, hasMarker = true, expected) {',
+    `export function completeCompaction(path, epoch, completion, hasMarker = true, expected) {
+      if (!existsSync(${JSON.stringify(once)})) {
+        writeFileSync(${JSON.stringify(once)}, 'done');
+        openState(path, 'concurrent-generation');
+      }`));
+  assert.equal(JSON.parse(f.run('sessionstart', {}, flags)).hookSpecificOutput.additionalContext, note);
+  assert.ok(JSON.parse(readFileSync(f.snapshot())).pending);
+  f.run('stop', {}, flags);
+  assert.equal(loadState(path).epoch, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  assert.equal(f.run('sessionstart', {}, flags), '');
+});
+
+test('retrying an older pending completion preserves judgments already bound to a later native marker', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const { loadRecords } = await import('../src/filter-transcript.mjs');
+  const f = fixture(t), path = join(f.dir, 'scores.json'), flags = `--state "${path}"`;
+  openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  f.run('precompact', {}, flags);
+  mkdirSync(`${path}.lock`); f.run('sessionstart', {}, flags); rmSync(`${path}.lock`, { recursive: true });
+  appendFileSync(f.transcript, '{"type":"compacted","payload":{"message":"later native state"}}\n');
+  const later = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  later.verdicts.fresh = {}; saveState(path, later);
+  f.run('stop', {}, flags);
+  assert.equal(loadState(path).generation, later.generation);
+  assert.deepEqual(loadState(path).verdicts, later.verdicts);
+});
+
+test('PostCompact resets immediately, retains delayed recovery, and never resets rebuilt scores on delivery', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const { loadRecords } = await import('../src/filter-transcript.mjs');
+  const f = fixture(t), path = join(f.dir, 'post-scores.json'), flags = `--state "${path}"`;
+  const old = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  old.verdicts.old = {}; saveState(path, old);
+  f.run('precompact', {}, flags);
+  appendFileSync(f.transcript, '{"type":"compacted","payload":{"message":"native completion"}}\n');
+  assert.equal(f.run('postcompact', {}, flags), '');
+  assert.deepEqual(loadState(path).verdicts, {});
+  const snapshot = JSON.parse(readFileSync(f.snapshot()));
+  snapshot.created = Date.now() - 24 * 60 * 60 * 1000;
+  writeFileSync(f.snapshot(), JSON.stringify(snapshot));
+  const rebuilt = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  rebuilt.verdicts.fresh = {}; saveState(path, rebuilt);
+  assert.equal(f.run('postcompact', {}, flags), '');
+  assert.equal(JSON.parse(f.run('sessionstart', {}, flags)).hookSpecificOutput.additionalContext, note);
+  assert.ok(loadState(path).verdicts.fresh);
+  assert.equal(f.run('postcompact', {}, flags), '');
+  assert.equal(f.run('sessionstart', {}, flags), '');
+  assert.ok(loadState(path).verdicts.fresh);
+});
+
+test('durable recovery rejects changed configuration, rewritten prefixes, and later completed compactions', t => {
+  for (const change of ['configuration', 'rewrite', 'two-markers', 'completed-epoch']) {
+    const f = fixture(t);
+    f.run('precompact');
+    if (change === 'rewrite') writeFileSync(f.transcript, '{"type":"session_meta","payload":{"changed":true}}\n');
+    if (change === 'two-markers' || change === 'completed-epoch') {
+      appendFileSync(f.transcript, '{"type":"compacted","payload":{"message":"first"}}\n');
+      if (change === 'completed-epoch') f.run('postcompact');
+      appendFileSync(f.transcript, '{"type":"compacted","payload":{"message":"second"}}\n');
+    }
+    assert.equal(f.run('sessionstart', {}, change === 'configuration' ? '--threshold 0.8' : ''), '');
+    assert.equal(f.run('sessionstart'), '');
+  }
+});
+
+test('PostCompact resets even without a recovery note and retries a contended reset through Stop', async t => {
+  const { openState, saveState, loadState } = await import('../src/scoring-state.mjs');
+  const { loadRecords } = await import('../src/filter-transcript.mjs');
+  const f = fixture(t), path = join(f.dir, 'contended-post.json'), flags = `--state "${path}"`;
+  const old = openState(path, loadRecords(f.transcript, { format: 'codex' }).epoch);
+  old.verdicts.old = {}; saveState(path, old);
+  f.stub('', 1); f.run('precompact', {}, flags);
+  mkdirSync(`${path}.lock`);
+  assert.equal(f.run('postcompact', {}, flags), '');
+  assert.ok(loadState(path).verdicts.old);
+  assert.ok(JSON.parse(readFileSync(f.snapshot())).pending);
+  rmSync(`${path}.lock`, { recursive: true });
+  f.run('stop', {}, flags);
+  assert.deepEqual(loadState(path).verdicts, {});
+  assert.equal(f.run('sessionstart', {}, flags), '');
+});
+
+test('malformed durable boundary metadata cannot deliver recovery', t => {
+  for (const invalid of [{ bytes: -1 }, { markers: -1 }, { markers: 100 }, { markers: null }]) {
+    const f = fixture(t); f.run('precompact');
+    writeFileSync(f.snapshot(), JSON.stringify({ ...JSON.parse(readFileSync(f.snapshot())), ...invalid }));
+    assert.equal(f.run('sessionstart'), '');
+  }
 });

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { hostname, homedir, tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { hookFlags, runCli } from '../hooks/common.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -58,13 +58,10 @@ export function createRecovery({ run = runCli, env = process.env, temporaryRoot 
       const flags = hookFlags(env.TRASHCOMPACT_FLAGS ?? '').filter(f => f !== '--recovery-rank');
       // A caller-supplied --state would break per-session isolation.
       if (flags.includes('--state')) return;
-      const cache = join(env.XDG_CACHE_HOME || join(env.HOME || homedir(), '.cache'), 'trashcompact', 'opencode');
-      await mkdir(cache, { recursive: true, mode: 0o700 });
-      await chmod(cache, 0o700);
       temporary = await mkdtemp(join(temporaryRoot, 'trashcompact-opencode-'));
       const transcript = join(temporary, 'visible.jsonl');
       await writeFile(transcript, records.map(r => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 });
-      const args = [transcript, ...flags, '--state', join(cache, `${identity}.json`), '--format', 'codex'];
+      const args = [transcript, ...flags, '--state', join(temporary, 'scores.json'), '--format', 'codex'];
       await run([...args, '--update', '--recovery-rank'], 45000);
       const note = await run([...args, '--recovery', '--recovery-rank', '--offline'], 10000);
       if (typeof note === 'string' && note.startsWith('[TrashCompact recovery context]') && Buffer.byteLength(note) <= 6000) return note.trim();

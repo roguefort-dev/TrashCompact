@@ -66,9 +66,23 @@ test('full paths, partial reads, unknown tools and old failures never supersede 
   assert.ok(records.every(record => POLICY[record.category].eligible));
   assert.deepEqual(pathsInCommand('cat "/a path/file.js" /tmp/important.txt'), ['/a path/file.js', '/tmp/important.txt']);
 });
-test('only proven local and empty records drop; unknown metadata and tail survive', () => {
+test('proven local and empty records drop inside the tail; unknown metadata survives', () => {
   const records = [classify({ type: 'file-history-snapshot' }), classify(message('assistant', [])), classify({ type: 'future-record', value: 'context' }), classify(message('assistant', ''))];
-  assert.deepEqual([...applyPolicies(records, { keepTail: 1 }).keys()], [0, 1]);
+  assert.deepEqual([...applyPolicies(records, { keepTail: 1 }).keys()], [0, 1, 3]);
+});
+test('empty user messages and assistant text with unknown fields stay protected', () => {
+  for (const entry of [message('user',''), message('user',[]),
+    {...message('assistant',''), extra:'Keep this context'},
+    {type:'assistant',message:{content:[{type:'text',text:'',extra:'Keep this context'}]}},
+    {type:'assistant',message:{content:'',extra:'Keep this context'}},
+  ]) {
+    const record=classify(entry);
+    assert.notEqual(record.category,CATEGORY.EMPTY);
+    assert.equal(applyPolicies([record],{keepTail:5}).size,0);
+  }
+  for (const protection of [{protected:true},{pinned:true},{hardProtected:true,tailProtected:true}]) {
+    assert.equal(applyPolicies([{category:CATEGORY.EMPTY,...protection}],{keepTail:5}).size,0);
+  }
 });
 
 test('malformed text blocks preserve complete data and never enter prose judging', () => {

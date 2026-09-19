@@ -1,5 +1,6 @@
 // Opt-in passage judgments. Raw records are never mutated; cached values contain
 // verdicts and hashes only, never copies of transcript text or generated claims.
+import { isExecutionReceipt, stripUserBoilerplate } from './codex.mjs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 export const RANK_VERSION = 1;
@@ -72,7 +73,7 @@ export function exactSpans(text, limit = RANK_LIMITS.passageBytes) {
 const words = text => new Set((text.toLowerCase().match(/[a-z][a-z0-9_./-]{3,}|\b[0-9]{3,}\b/g) ?? []).filter(word => !new Set(['this','that','with','from','have','will','were','been','into','then','they','their','there','after','before','tests','passed','output','error','failed','file','code']).has(word)));
 const canReplace = text => /\b(?:fixed|resolved|corrected|replaced|implemented|committed|stopped|changed|removed|pushed|configured|migrated|disabled|enabled|no longer running|now works|now uses|now enabled)\b/i.test(text) && !/\b(?:will|plan|intend|should|could|would|next step|not yet|not fixed|unresolved)\b/i.test(text);
 export function prepareRecoveryRanking(records, options, cache = {}) {
-  const meaningfulUser = record => record.role === 'user' ? (record.text ?? '').replace(/^[ \t]*<(recommended_plugins|environment_context)>[\s\S]*?<\/\1>/gm, '').trim() : '';
+  const meaningfulUser = record => record.role === 'user' ? stripUserBoilerplate(record.text ?? '').trim() : '';
   const userText = records.map(meaningfulUser).findLast(text => text) ?? '';
   const query = secret(userText) || opaque(userText) ? '' : Buffer.byteLength(userText) <= RANK_LIMITS.queryBytes ? userText :
     bounded(userText,580) + '\n[query gap]\n' + Array.from(bounded(Array.from(userText).reverse().join(''),600)).reverse().join('');
@@ -83,7 +84,8 @@ export function prepareRecoveryRanking(records, options, cache = {}) {
     if (['session_meta','turn_context'].includes(record.entry?.type) && typeof payload?.cwd === 'string') contextCwd = payload.cwd;
     if (['function_call','custom_tool_call'].includes(payload?.type)) calls.set(payload.call_id,{...payload,contextCwd});
   }
-  const allEligible = records.flatMap(record => sourcesFor(record,calls).map(source => ({record,source}))).filter(({ source }) => !secret(source.text) && !opaque(source.text)).reverse();
+  const allEligible = records.flatMap(record => sourcesFor(record,calls).map(source => ({record,source}))).filter(({ record, source }) => !secret(source.text) && !opaque(source.text) &&
+    !(record.role === 'tool' && isExecutionReceipt(source.text))).reverse();
   // Reserve both source types before filling unused slots. Blocks retain exact
   // field provenance; the bounded shortlist cannot cover every readable source.
   const eligible = [...new Set([...allEligible.filter(item => item.record.role === 'assistant').slice(0,16),
@@ -126,7 +128,7 @@ export function prepareRecoveryRanking(records, options, cache = {}) {
   }
   return { query, candidates, pairs };
 }
-export async function scoreRecoveryRanking(client, sdk, prepared, usage, cache = {}) {
+export async function scoreRecoveryRanking(client, sdk, prepared, usage, cache = {}, checkpoint = async () => {}) {
   const next = { version: RANK_VERSION, passages: { ...cache.passages }, relations: { ...cache.relations } };
   const jobs = [...prepared.candidates.filter(item => !item.verdict).map(item => ({ kind: 'passage', item })), ...prepared.pairs.filter(item => !item.verdict).map(item => ({ kind: 'relation', item }))];
   // Independent judgments share a bounded batch; questions refer to their own
@@ -153,7 +155,7 @@ export async function scoreRecoveryRanking(client, sdk, prepared, usage, cache =
       continue; // Oversized singleton remains unjudged; offline baseline survives.
     }
     let result;
-    try { result = await client.systemOne({ state, questions }); } catch { throw new Error('Jev recovery ranking failed; no new ranking cache was written.'); }
+    try { result = await client.systemOne({ state, questions }); } catch { throw new Error('Jev recovery ranking failed. Earlier completed batches remain cached; no transcript output was written.'); }
     usage.requests++;
     for (const field of ['input', 'output']) { const value = result?.usage?.[`${field}_tokens`]; if (Number.isFinite(value) && value >= 0) usage[field] = (usage[field] ?? 0) + value; }
     batch.forEach(({ kind, item }, index) => {
@@ -163,6 +165,7 @@ export async function scoreRecoveryRanking(client, sdk, prepared, usage, cache =
         next[kind === 'passage' ? 'passages' : 'relations'][item.key] = item.verdict;
       }
     });
+    await checkpoint(next);
   }
   return next;
 }

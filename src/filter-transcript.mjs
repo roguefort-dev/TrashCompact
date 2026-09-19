@@ -20,10 +20,14 @@ import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import process from "node:process";
-import { CATEGORY, POLICY, classify, applyPolicies, liveWindowStart } from "./classify.mjs";
+import { CATEGORY, POLICY, classify, isPlainAssistant, applyPolicies, liveWindowStart } from "./classify.mjs";
 import { prepareRecoveryRanking, scoreRecoveryRanking, rankedPassages } from "./recovery-rank.mjs";
 import { detectFormat, classifyCodex, codexTool, recoveryEvidence } from "./codex.mjs";
 import { pruneToolExchanges } from "./static-tools.mjs";
+import { loadState, saveState, openState, nativeEpoch } from "./scoring-state.mjs";
+import { prepareRelevance, judgeRelevance, renderRelevance, selectRelevance } from "./relevance.mjs";
+import { prepareTaskGroups, judgeTaskGroups, taskGroupsFor } from "./task-groups.mjs";
+import { maybeCheckForUpdates } from "./updates.mjs";
 
 // Prefer this checkout own node_modules, so a fresh clone works with no global install.
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -76,7 +80,7 @@ const RETIRED_BARE_FLAGS = new Set(["no-dedup"]);
 function parseArguments(argv) {
   const options = {
     ...DEFAULTS, input: undefined, out: undefined, plan: false, digest: false, model: process.env.TYPESAFE_DEFAULT_MODEL || "jev-1.13.0",
-    format: "auto", recoveryRank: false, recovery: false, update: false, offline: false, precompact: false, state: undefined, selfTest: false, fullLog: false,
+    format: "auto", relevance: false, recoveryRank: false, recovery: false, update: false, offline: false, precompact: false, state: undefined, selfTest: false, fullLog: false,
   };
   const numeric = new Set(["batch", "keep-tail", "chars", "threshold", "min-confidence"]);
   const retired = [];
@@ -94,6 +98,7 @@ function parseArguments(argv) {
     else if (argument === "--update") options.update = true;
     else if (argument === "--offline") options.offline = true;
     else if (argument === "--full-log") options.fullLog = true;
+    else if (argument === "--relevance") options.relevance = true;
     else if (argument === "--recovery-rank") options.recoveryRank = true;
     else if (argument === "--recovery") { options.recovery = true; options.offline = true; }
     else if (argument === "--format") options.format = valueAfter(++index, "format");
@@ -126,12 +131,18 @@ function parseArguments(argv) {
   if (options.selfTest && (options.offline || options.plan || options.update || options.digest || options.out))
     throw new Error("--self-test cannot be combined with offline, precompact, plan, update, digest, or output modes.");
   if (options.selfTest) return options;
+  if (options.relevance && !options.digest && !options.update && !options.plan && !options.precompact && !options.recovery)
+    throw new Error("--relevance produces derived text; combine it with --digest, --update, --plan, --precompact, or --recovery.");
   if (!options.input) throw new Error("Give a transcript path, or - for stdin.");
-  if (options.update && options.input === "-") throw new Error("--update needs a real transcript path, not stdin.");
   if (!options.state && options.input !== "-") {
     const identity = existsSync(options.input) ? realpathSync(options.input) : resolve(options.input);
     options.state = `${STATE_HOME}/${createHash("sha256").update(identity).digest("hex")}.json`;
   }
+  assertDistinctPaths(options);
+  return options;
+}
+
+function assertDistinctPaths(options) {
   const paths = [options.input === "-" ? null : options.input, options.out, options.state].filter(Boolean);
   const canonical = (path) => {
     if (existsSync(path)) return realpathSync(path);
@@ -144,7 +155,6 @@ function parseArguments(argv) {
     if (canonical(paths[i]) === canonical(paths[j]) || (a && b && a.dev === b.dev && a.ino === b.ino))
       throw new Error("Input, output, and state must be different files.");
   }
-  return options;
 }
 
 // ---- verdict cache ---------------------------------------------------------
@@ -152,43 +162,6 @@ function parseArguments(argv) {
 // Stores raw verdicts, never the removal decision: thresholds stay retunable
 // without paying to re-judge anything.
 
-function loadState(path) {
-  const empty = { version: 2, anchor: null, verdicts: {}, usage: { requests: 0, input: 0 }, runs: 0 };
-  if (!path || !existsSync(path)) return empty;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed?.version === 2 && parsed.verdicts && typeof parsed.verdicts === "object" && !Array.isArray(parsed.verdicts)
-      ? { ...empty, ...parsed } : empty;
-  } catch { return empty; }
-}
-
-// Lock only the read/merge/rename transaction, never the remote request. A competing
-// writer fails safely without overwriting its cache. A stale lock requires removal.
-function saveState(path, state, delta = { requests: 0, input: 0 }) {
-  if (!path) return;
-  mkdirSync(dirname(path), { recursive: true });
-  const lock = `${path}.lock`;
-  try { mkdirSync(lock); } catch (error) {
-    if (error.code === "EEXIST") throw new Error(`Cache is locked by another writer: ${path}`);
-    throw error;
-  }
-  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    const current = loadState(path);
-    const counter = (value) => Number.isFinite(value) && value >= 0 ? value : 0;
-    const merged = { ...state, verdicts: { ...current.verdicts, ...state.verdicts },
-      recoveryRank: { version: 1,
-        passages: { ...current.recoveryRank?.passages, ...state.recoveryRank?.passages },
-        relations: { ...current.recoveryRank?.relations, ...state.recoveryRank?.relations } },
-      runs: counter(current.runs) + 1,
-      usage: { requests: counter(current.usage?.requests) + counter(delta.requests), input: counter(current.usage?.input) + counter(delta.input) } };
-    writeFileSync(temporary, `${JSON.stringify(merged, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-    renameSync(temporary, path);
-  } finally {
-    rmSync(temporary, { force: true });
-    rmSync(lock, { recursive: true, force: true });
-  }
-}
 
 const validRetention = (value) => Number.isFinite(value?.score) && value.score >= 0 && value.score <= 2 &&
   Number.isFinite(value?.confidence) && value.confidence >= 0 && value.confidence <= 1;
@@ -267,7 +240,9 @@ function loadRecords(input, { fullLog = false, format = "auto" } = {}) {
       answersIds: verdict.answersIds ?? blocks.filter((block) => block?.type === "tool_result" && block.tool_use_id).map((block) => block.tool_use_id),
     });
   }
-  return { records, start, totalEntries: entries.length, totalTurns: turn, format: detectedFormat };
+  return { records, start, totalEntries: entries.length, totalTurns: turn, format: detectedFormat,
+    epoch: nativeEpoch(entries, detectedFormat),
+    sourceHash: input === "-" ? createHash("sha256").update(raw).digest("hex") : null };
 }
 
 // Only adjacent assistant prose in the same human turn can be collapsed. Compare
@@ -275,12 +250,14 @@ function loadRecords(input, { fullLog = false, format = "auto" } = {}) {
 function dedupPayloads(records) {
   let removed = 0;
   const assistantPayload = (record) => record.format === 'codex'
-    ? record.entry.type === 'response_item' && record.entry.payload?.type === 'message' && record.entry.payload.role === 'assistant' ? record.entry.payload : null
-    : record.entry.type === 'assistant' ? record.entry.message : null;
+    ? record.entry.type === 'response_item' && Object.keys(record.entry).every(key => ['type','timestamp','payload'].includes(key)) &&
+      record.entry.payload?.type === 'message' && record.entry.payload.role === 'assistant' ? record.entry.payload : null
+    : isPlainAssistant(record.entry) ? record.entry.message : null;
   for (let index = 0; index + 1 < records.length; index++) {
     const record = records[index], next = records[index + 1];
     const payload = assistantPayload(record), nextPayload = assistantPayload(next);
-    if (record.protected || record.category !== CATEGORY.PROSE || next.category !== CATEGORY.PROSE ||
+    if (record.pinned || next.pinned || (record.hardProtected ?? record.protected) || (next.hardProtected ?? next.protected) ||
+        record.category !== CATEGORY.PROSE || next.category !== CATEGORY.PROSE ||
         !payload || !nextPayload || record.turn !== next.turn) continue;
     if (JSON.stringify(payload) === JSON.stringify(nextPayload)) {
       record.removed = "exact-repeat";
@@ -294,27 +271,24 @@ function protectRecords(records, keepTail) {
   const answered = new Set(records.flatMap((r) => r.answersIds ?? []));
   records.forEach((record, index) => {
     record.tailProtected = index >= records.length - keepTail;
-    record.protected = record.tailProtected || POLICY[record.category]?.pinned ||
+    record.hardProtected = Boolean(POLICY[record.category]?.pinned ||
       record.pinned || record.category === CATEGORY.HUMAN_INSTRUCTION ||
-      record.issuedIds?.some((id) => !answered.has(id));
+      (record.format === 'codex' && [CATEGORY.EMPTY, CATEGORY.LOCAL_ONLY].includes(record.category) &&
+        Object.keys(record.entry).some(key => !['type','timestamp','payload'].includes(key))) ||
+      record.issuedIds?.some((id) => !answered.has(id)));
+    record.protected = record.tailProtected || record.hardProtected;
   });
 }
 
 // Remove proven redundant tool pairs before local metadata and empty records.
 // Already removed entries stay hidden from subsequent policy checks.
-function runPolicies(records, keepTail) {
+function runPolicies(records) {
   pruneToolExchanges(records);
-  const totalTurns = records.length ? records[records.length - 1].turn : 0;
   const masked = records.map((record) =>
     record.removed ? { category: CATEGORY.EMPTY, supersedeKey: null } : record);
-  const drops = applyPolicies(masked, {
-    turnOf: (index) => records[index].turn,
-    totalTurns,
-    keepTail,
-    total: records.length,
-  });
+  const drops = applyPolicies(masked);
   for (const [index, reason] of drops) {
-    if (!records[index].removed && !records[index].protected) records[index].removed = reason;
+    if (!records[index].removed && !(records[index].hardProtected ?? records[index].protected)) records[index].removed = reason;
   }
 }
 
@@ -324,7 +298,7 @@ const chunk = (items, size) => {
   return out;
 };
 
-async function runPass1(client, sdk, candidates, options, usage) {
+async function runPass1(client, sdk, candidates, options, usage, checkpoint = async () => {}) {
   const { score, choice } = sdk;
   const batches = chunk(candidates.filter((r) => !r.removed && r.category === CATEGORY.PROSE && !r.pinned && !r.protected && r.text.length <= options.chars), options.batch);
   for (let position = 0; position < batches.length; position++) {
@@ -353,9 +327,9 @@ async function runPass1(client, sdk, candidates, options, usage) {
     process.stderr.write(`\rjudging prose  batch ${position + 1}/${batches.length}`);
     let result;
     try { result = await client.systemOne({ state, questions }); }
-    catch { throw new Error("Jev request failed; no new verdicts or output were written. Check service connectivity and authentication."); }
+    catch { throw new Error("Jev request failed. Earlier completed batches remain cached; no transcript output was written. Check service connectivity and authentication."); }
     usage.requests += 1;
-    if (!result || typeof result !== "object") continue;
+    if (!result || typeof result !== "object") { await checkpoint(batch); continue; }
     usage.input += Number.isFinite(result.usage?.input_tokens) && result.usage.input_tokens >= 0 ? result.usage.input_tokens : 0;
     usage.output += Number.isFinite(result.usage?.output_tokens) && result.usage.output_tokens >= 0 ? result.usage.output_tokens : 0;
     for (const record of batch) {
@@ -365,6 +339,7 @@ async function runPass1(client, sdk, candidates, options, usage) {
       const intent = result.answers?.[`c_e${record.index}`]?.choice;
       record.intent = Object.hasOwn(CATEGORIES, intent) ? intent : null;
     }
+    await checkpoint(batch);
   }
 }
 
@@ -523,8 +498,13 @@ async function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.selfTest) return selfTest(options);
 
-  const { records, start, totalEntries, totalTurns } = loadRecords(options.input, { fullLog: options.fullLog, format: options.format });
-  const state = loadState(options.state);
+  const initialState = options.state ? loadState(options.state) : undefined;
+  const { records, start, totalEntries, totalTurns, sourceHash, epoch } = loadRecords(options.input, { fullLog: options.fullLog, format: options.format });
+  if (!options.state) {
+    options.state = join(STATE_HOME, `stdin-${sourceHash}.json`);
+    assertDistinctPaths(options);
+  }
+  const state = openState(options.state, epoch, options.offline || options.plan, initialState);
 
   const totalChars = records.reduce((sum, record) => sum + (record.text?.length ?? 0), 0);
   const totalImages = records.reduce((sum, record) => sum + (record.imageBytes ?? 0), 0);
@@ -550,9 +530,11 @@ async function main() {
 
   const candidates = records.filter((record) =>
     !record.removed && !record.protected && POLICY[record.category]?.judge && record.text?.length && record.text.length <= options.chars);
-  const unscored = candidates.filter((record) => !record.retention);
+  const unscored = options.relevance ? [] : candidates.filter((record) => !record.retention);
+  const taskGrouping = options.relevance ? prepareTaskGroups(records, { ...options, cachedOnly: options.offline || !options.update }, state.taskGroups) : null;
+  let relevance = null;
 
-  const recoveryRanking = options.recoveryRank ? prepareRecoveryRanking(records, options, state.recoveryRank) : null;
+  const recoveryRanking = options.recoveryRank && !options.relevance ? prepareRecoveryRanking(records, options, state.recoveryRank) : null;
   if (options.plan) {
     const byCategory = new Map();
     for (const record of records) byCategory.set(record.category, (byCategory.get(record.category) ?? 0) + 1);
@@ -569,6 +551,7 @@ async function main() {
       `text heuristic   ~${approxTokens(totalChars).toLocaleString()} tokens (chars/4; not live context)` +
       `${totalImages ? ` + ${megabytes(totalImages * 0.75)} image payload` : ""}\n` +
       `jev payload      ~${unscored.reduce((s, r) => s + Math.min(r.text.length, options.chars), 0).toLocaleString()} chars\n` +
+      (taskGrouping ? `relevance       opt-in derived text; ${taskGrouping.requests.length} requests for sequential grouping; cached-only when offline; <=28000 serialized bytes/request; plan sends nothing\n` : "") +
       (recoveryRanking ?
         `recovery rank    opt-in: ${recoveryRanking.candidates.length} passages (${recoveryRanking.candidates.filter(item => item.verdict).length} cached, ${recoveryRanking.candidates.filter(item => !item.verdict).length} unscored), ${recoveryRanking.pairs.length} pairs (${recoveryRanking.pairs.filter(item => item.verdict).length} cached, ${recoveryRanking.pairs.filter(item => !item.verdict).length} unscored)\n` +
         `expanded egress  <=${[...recoveryRanking.candidates.filter(item => !item.verdict).map(item => [item]), ...recoveryRanking.pairs.filter(item => !item.verdict).map(item => [item.older,item.newer])].reduce((bytes,items) => bytes + Buffer.byteLength(recoveryRanking.query) + items.reduce((sum,item) => sum + Buffer.byteLength(item.text + item.lead + (item.scope?.name ?? '') + (item.scope?.command ?? '') + (item.scope?.cwd ?? '')),0),0)} source/query/scope UTF-8 bytes before JSON/questions; <=30000 serialized bytes/request; plan sends nothing\n` : ''),
@@ -577,53 +560,78 @@ async function main() {
   }
 
   const usage = { input: 0, output: 0, requests: 0 };
-
-  if (!options.offline && unscored.length) {
-    const sdk = await loadSdk();
-    if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set.");
-    const client = new sdk.TypeSafeClient(options.model ? { defaultModel: options.model } : {});
-    await runPass1(client, sdk, unscored, options, usage);
-  }
-  if (recoveryRanking && options.update && !options.offline &&
-      (recoveryRanking.candidates.some(item => !item.verdict) || recoveryRanking.pairs.some(item => !item.verdict))) {
-    const sdk = await loadSdk();
-    if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set.");
-    const client = new sdk.TypeSafeClient(options.model ? { defaultModel: options.model } : {});
-    state.recoveryRank = await scoreRecoveryRanking(client, sdk, recoveryRanking, usage, state.recoveryRank);
-  }
-  if (recoveryRanking) process.stderr.write(`recovery ranking: ${recoveryRanking.candidates.length} bounded passages, ${recoveryRanking.pairs.length} pairs, ${recoveryRanking.candidates.filter(item => item.verdict).length} passage verdicts available\n`);
-  applyRetention(candidates, options);
-  process.stderr.write("\r\x1b[K");
-
-  if (options.state && !options.offline) {
-    for (const record of records) {
+  let checkpointedUsage = { ...usage }, runRecorded = false;
+  const checkpoint = (batch = []) => {
+    for (const record of batch) {
       if (!validRetention(record.retention)) continue;
       state.verdicts[verdictKey(record, options)] = {
-        index: record.index,
-        category: record.category,
-        retention: record.retention,
+        index: record.index, category: record.category, retention: record.retention,
         ...(record.intent && { intent: record.intent }),
       };
     }
     state.anchor = records[0]?.id ?? null;
     state.scanned = records.length;
     state.updated = new Date().toISOString();
-    saveState(options.state, state, usage);
-  }
+    const delta = Object.fromEntries(Object.keys(usage).map(key => [key, usage[key] - checkpointedUsage[key]]));
+    saveState(options.state, state, delta, runRecorded ? 0 : 1);
+    checkpointedUsage = { ...usage };
+    runRecorded = true;
+  };
 
-  const kept = records.filter((record) => !record.removed);
+  if (!options.offline && unscored.length) {
+    const sdk = await loadSdk();
+    if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set.");
+    const client = new sdk.TypeSafeClient(options.model ? { defaultModel: options.model } : {});
+    checkpoint(); // Check persistence before paying for the first request.
+    await runPass1(client, sdk, unscored, options, usage, checkpoint);
+  }
+  if (recoveryRanking && options.update && !options.offline &&
+      (recoveryRanking.candidates.some(item => !item.verdict) || recoveryRanking.pairs.some(item => !item.verdict))) {
+    const sdk = await loadSdk();
+    if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set.");
+    const client = new sdk.TypeSafeClient(options.model ? { defaultModel: options.model } : {});
+    checkpoint();
+    state.recoveryRank = await scoreRecoveryRanking(client, sdk, recoveryRanking, usage, state.recoveryRank, next => {
+      state.recoveryRank = next;
+      checkpoint();
+    });
+  }
+  if (recoveryRanking) process.stderr.write(`recovery ranking: ${recoveryRanking.candidates.length} bounded passages, ${recoveryRanking.pairs.length} pairs, ${recoveryRanking.candidates.filter(item => item.verdict).length} passage verdicts available\n`);
+  if (taskGrouping) {
+    // Offline readers replay only exact cached judgments. Missing classifications
+    // remain uncertain and missing passage verdicts always keep the source.
+    const cachedOnly = options.offline || !options.update;
+    const sdk = cachedOnly ? null : await loadSdk();
+    const client = cachedOnly ? {}
+      : process.env.TYPESAFE_API_KEY ? new sdk.TypeSafeClient(options.model ? { defaultModel: options.model } : {}) : null;
+    if (!client) throw new Error("TYPESAFE_API_KEY is not set.");
+    const persist = async (name, next) => { state[name] = next; if (!options.offline) checkpoint(); };
+    if (!options.offline) checkpoint();
+    state.taskGroups = await judgeTaskGroups(client, sdk, taskGrouping, usage, state.taskGroups, next => persist("taskGroups", next));
+    relevance = prepareRelevance(records, { model: options.model, taskGroups: taskGroupsFor(taskGrouping), cachedOnly }, state.relevance);
+    state.relevance = await judgeRelevance(client, sdk, relevance, usage, state.relevance, next => persist("relevance", next));
+    process.stderr.write(`relevance: ${relevance.reason ?? "usable"}, ${relevance.candidates.length} passages, ${selectRelevance(relevance).filter(item => !item.keep).length} exact omissions in derived text\n`);
+  } else applyRetention(candidates, options);
+  process.stderr.write("\r\x1b[K");
+
+  if (!options.offline) checkpoint();
+
+  const derived = relevance ? new Map(renderRelevance(records, relevance).map(item => [item.entry, item.text])) : null;
+  const outputRecords = derived ? records.map(record => derived.has(record.index) ? { ...record, text: derived.get(record.index) } : record) : records;
+  const kept = outputRecords.filter((record) => !record.removed);
   const removed = records.filter((record) => record.removed);
   const keptChars = kept.reduce((sum, record) => sum + (record.text?.length ?? 0), 0);
 
   if (options.recovery) {
-    process.stdout.write(recoveryEvidence(records.filter(record => !record.recoveryExcluded), 6000, recoveryRanking ? rankedPassages(recoveryRanking) : null));
+    process.stdout.write(recoveryEvidence(outputRecords.filter(record => !record.recoveryExcluded), 6000, recoveryRanking && !relevance ? rankedPassages(recoveryRanking) : null));
     return;
   }
   if (options.precompact) {
-    process.stdout.write(precompactInstructions(records));
+    process.stdout.write(precompactInstructions(outputRecords));
     return;
   }
   if (options.update) {
+    await maybeCheckForUpdates(options);
     process.stderr.write(
       `trashcompact: ${records.length} analyzed of ${totalEntries} entries, ` +
       `+${unscored.filter((r) => validRetention(r.retention)).length} scored, ${reused} cached, ${usage.requests} requests, ` +

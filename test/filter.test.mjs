@@ -27,12 +27,52 @@ test('malformed and truncated records fail without creating output', t => {
   const result=spawnSync(process.execPath,['src/filter-transcript.mjs',input,'--offline','--out',output],{encoding:'utf8'});
   assert.equal(result.status,1); assert.throws(()=>readFileSync(output));
 });
-test('tail protection applies to dedup, policies and cached retention', () => {
-  const records=[prose('hello'),prose('hello',1)];
-  protectRecords(records,2); dedupPayloads(records); runPolicies(records,0);
+test('tail keeps unique prose and cached low scores but drops exact adjacent duplicates', async () => {
+  const records=[prose('Keep the API contract.'),prose('Keep the API contract.',1),prose('The migration still needs review.',2)];
+  protectRecords(records,5); dedupPayloads(records); runPolicies(records,5);
   for(const r of records) r.retention={score:0,confidence:1};
-  applyRetention(records,opts); assert.ok(records.every(r=>!r.removed));
+  applyRetention(records,opts);
+  assert.equal(records[0].removed,'exact-repeat');
+  assert.ok(records.slice(1).every(r=>!r.removed));
+  await runPass1({systemOne:async()=>assert.fail('Recent prose must not be sent to Jev')},{},records,opts,{});
 });
+for(const format of ['codex','claude']) {
+  const message=(role,text)=>format==='codex'
+    ? {type:'response_item',payload:{type:'message',role,content:[{type:'text',text}]}}
+    : {type:role,message:{content:[{type:'text',text}]}};
+  const inspect=(t,entries)=>{
+    const input=join(temporary(t),'input.jsonl');writeFileSync(input,entries.map(JSON.stringify).join('\n'));
+    const {records}=loadRecords(input);protectRecords(records,5);dedupPayloads(records);runPolicies(records,5);return records;
+  };
+  test(`${format}: last five records retain context while removing proven empty and local data`,t=>{
+    const local=format==='codex'?{type:'event_msg',payload:{type:'token_count',info:{}}}:{type:'file-history-snapshot'};
+    const records=inspect(t,[message('user','Preserve this request.'),local,message('assistant',''),message('assistant','Unique reasoning: preserve stable IDs.'),message('assistant','Working on it.')]);
+    assert.deepEqual(records.map(record=>record.removed??null),[null,CATEGORY.LOCAL_ONLY,CATEGORY.EMPTY,null,null]);
+    assert.ok(records.every(record=>record.tailProtected));
+  });
+  test(`${format}: tail cleanup retains user messages, thinking, unknown payloads and incomplete calls`,t=>{
+    const thinking=format==='codex'?{type:'response_item',payload:{type:'reasoning',summary:[]}}
+      : {type:'assistant',message:{content:[{type:'thinking',thinking:'Private reasoning'}]}};
+    const unknown=message('assistant','');unknown.extra='Important unknown context';
+    const call=format==='codex'?{type:'response_item',payload:{type:'function_call',name:'exec_command',call_id:'pending',arguments:'{"cmd":"test"}'}}
+      : {type:'assistant',message:{content:[{type:'tool_use',id:'pending',name:'Bash',input:{command:'test'}}]}};
+    const mixed=message('assistant','');
+    (format==='codex'?mixed.payload.content:mixed.message.content).push({type:'unknown',text:'Keep this evidence'});
+    const records=inspect(t,[message('user',''),thinking,unknown,call,mixed]);
+    assert.ok(records.every(record=>!record.removed));
+    assert.equal(records[3].hardProtected,true);
+  });
+  test(`${format}: recent duplicate cleanup requires exact text, pure payload and the same human turn`,t=>{
+    for(const [a,b] of [['API','api'],['a b','a  b'],['time 1ms','time 2ms']]) {
+      assert.ok(inspect(t,[message('assistant',a),message('assistant',b)]).every(record=>!record.removed));
+    }
+    const duplicated=inspect(t,[message('assistant','Same'),message('assistant','Same'),message('assistant','Same')]);
+    assert.deepEqual(duplicated.map(record=>record.removed??null),['exact-repeat','exact-repeat',null]);
+    assert.ok(inspect(t,[message('assistant','Same'),message('user','Again'),message('assistant','Same')]).every(record=>!record.removed));
+    const unknown=message('assistant','Same');unknown.extra='Do not drop this field';
+    assert.ok(inspect(t,[unknown,structuredClone(unknown)]).every(record=>!record.removed));
+  });
+}
 test('dedup preserves case, measurements, IDs, nested payload and roles', () => {
   for(const [a,b] of [['time 1ms','time 2ms'],['sha abcdef0','sha abcdef1'],['API','api'],['a b','a  b']]) {
     const records=[prose(a),prose(b,1)]; dedupPayloads(records); assert.ok(!records[0].removed);
@@ -84,7 +124,7 @@ test('steering stays within 6000 UTF-8 bytes and preserves failure evidence guid
 test('independent cache writers merge usage deltas and run counts', t => {
   const path=join(temporary(t),'state'), a=loadState(path), b=loadState(path);
   saveState(path,a,{requests:1,input:10});saveState(path,b,{requests:2,input:20});
-  assert.deepEqual(loadState(path).usage,{requests:3,input:30});assert.equal(loadState(path).runs,2);
+  assert.deepEqual(loadState(path).usage,{requests:3,input:30,output:0});assert.equal(loadState(path).runs,2);
 });
 test('same basename transcripts have different default caches', t => {
   const dir=temporary(t);mkdirSync(join(dir,'a'));mkdirSync(join(dir,'b'));
