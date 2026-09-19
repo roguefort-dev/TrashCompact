@@ -6,7 +6,7 @@ Start with the prompt for your harness in [the README](../README.md). Setup requ
 
 | Application | Target | Compatibility |
 |---|---|---|
-| Codex | `codex` | Hooks checked with terminal CLI 0.154.0. Requires human trust review. |
+| Codex | `codex` | Installed lifecycle checked on Linux with Codex 0.154.0; see verification scope below. Requires human trust review. |
 | Claude Code | `claude` | Requires Stop, PreCompact, and SessionStart hooks. |
 | OpenCode v1 | `opencode` | Requires 1.18.29 or newer with the matching plugin API. Fixture coverage only. |
 | OpenCode 2 | `opencode2` | Verified with synthetic compactions on 2.0.10. Beta `0.0.0-beta-19157` is unsupported. Check other versions against the required compaction API. |
@@ -73,6 +73,8 @@ npm run self-test
 ```
 
 It tests connectivity and scoring, not hook delivery or recall. Do not process real chats as installation tests or expose credentials during diagnosis. Installation leaves existing task history intact.
+
+Testing in an authorized Codex desktop task verified native compaction, recovery delivery and cache reset through SessionStart, automatic Stop scoring, and cache reuse without additional requests. Immediate PostCompact execution was not verified in that already-loaded task; the command passed an isolated check using copies of the same transcript and cache. This live verification applies to Codex on Linux.
 
 ## Remove
 
