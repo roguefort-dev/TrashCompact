@@ -132,6 +132,9 @@ test('Windows ACL command restricts and verifies access without putting paths or
       assert.match(script, /WindowsIdentity\]::GetCurrent\(\)\.User/);
       assert.match(script, /AreAccessRulesProtected/);
       assert.match(script, /GetAccessRules/);
+      assert.match(script, /\[System\.IO\.Directory\]::SetAccessControl/);
+      assert.match(script, /\[System\.IO\.File\]::GetAccessControl/);
+      assert.doesNotMatch(script, /Set-Acl|Get-Acl|New-Object/);
       return { status: 0 };
     },
   });
@@ -156,7 +159,11 @@ test('native Windows replacement keeps only the current user in a protected cred
   const path = join(home, 'credentials with spaces', 'env');
   mkdirSync(join(home, 'credentials with spaces'));
   writeFileSync(path, 'OTHER=keep\nTYPESAFE_API_KEY=synthetic-old\n');
-  const env = { ...process.env, HOME: home, USERPROFILE: home, TRASHCOMPACT_ENV: path };
+  // Parent shells can export incompatible PowerShell 7 modules to Windows
+  // PowerShell 5.1. ACL persistence must not depend on loading shell modules.
+  const modulePath = join(home, 'unavailable modules');
+  mkdirSync(modulePath);
+  const env = { ...process.env, HOME: home, USERPROFILE: home, TRASHCOMPACT_ENV: path, PSModulePath: modulePath };
   savePrivateKey(synthetic, {
     env,
     restrictAccess(staged, kind, options) {
@@ -175,7 +182,7 @@ test('native Windows replacement keeps only the current user in a protected cred
   const script = `
 $ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$acl = Get-Acl -LiteralPath $env:TRASHCOMPACT_ENV
+$acl = [System.IO.File]::GetAccessControl($env:TRASHCOMPACT_ENV)
 $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
 if (!$acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].IsInherited) { exit 1 }
 `;

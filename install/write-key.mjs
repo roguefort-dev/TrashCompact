@@ -7,22 +7,29 @@ import { pathToFileURL } from 'node:url';
 
 // This script receives only a path and kind through the environment, never a key.
 // Disable inherited access and verify the resulting ACL before writing secrets.
+// Use Windows PowerShell 5.1's .NET APIs directly: a parent PowerShell 7 process
+// can export module paths that prevent Set-Acl/Get-Acl from loading in 5.1.
 const privateAclScript = `
 $ErrorActionPreference = 'Stop'
 $path = $env:TRASHCOMPACT_PRIVATE_PATH
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($env:TRASHCOMPACT_PRIVATE_KIND -eq 'directory') {
-  $acl = New-Object System.Security.AccessControl.DirectorySecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
+  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
 } else {
-  $acl = New-Object System.Security.AccessControl.FileSecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
+  $acl = [System.Security.AccessControl.FileSecurity]::new()
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow')
 }
 $acl.SetAccessRuleProtection($true, $false)
 $acl.SetOwner($sid)
 $acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $path -AclObject $acl
-$check = Get-Acl -LiteralPath $path
+if ($env:TRASHCOMPACT_PRIVATE_KIND -eq 'directory') {
+  [System.IO.Directory]::SetAccessControl($path, $acl)
+  $check = [System.IO.Directory]::GetAccessControl($path)
+} else {
+  [System.IO.File]::SetAccessControl($path, $acl)
+  $check = [System.IO.File]::GetAccessControl($path)
+}
 $rules = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
 if (!$check.AreAccessRulesProtected -or $rules.Count -ne 1 -or
     $rules[0].IdentityReference.Value -ne $sid.Value -or
