@@ -17,6 +17,42 @@ test('role controls both string and block text classification; brief consent and
     }
   }
 });
+test('newer client metadata keeps assistant prose judgeable, and content-bearing envelopes stay protected', () => {
+  // Claude Code 2.1.270 adds these to every assistant turn; none of them carry content.
+  const entry = {
+    type: 'assistant', uuid: 'u', parentUuid: 'p', timestamp: 't', sessionId: 's', version: '2.1.270',
+    cwd: '/tmp', userType: 'external', isSidechain: false, isMeta: false, requestId: 'r', gitBranch: 'main',
+    apiBlockIndex: 1, entrypoint: 'claude-desktop', effort: 'xhigh', perTurnEffort: 'xhigh',
+    slug: 'delegated-honking-hare', quotaLimits: { status: 'rejected' },
+    attributionMcpServer: null, attributionMcpTool: null, attributionSkill: null,
+    message: { id: 'm', type: 'message', role: 'assistant', model: 'claude-opus-5', stop_reason: 'end_turn',
+      stop_sequence: null, usage: {}, container: null, stop_details: null, diagnostics: null, context_management: null,
+      content: [{ type: 'text', text: 'the epoch-0 case must stay anchored to the UTC horizon' }] },
+  };
+  const prose = classify(entry);
+  assert.equal(prose.category, CATEGORY.PROSE);
+  assert.equal(POLICY[prose.category].judge, true);
+  // An unknown key is still unknown: it may carry context, so the record stays out of judging.
+  assert.notEqual(classify({ ...entry, somethingNew: 'unrecognised' }).category, CATEGORY.PROSE);
+  // Error envelopes are content, not bookkeeping.
+  assert.notEqual(classify({ ...entry, isApiErrorMessage: true, apiErrorStatus: 429 }).category, CATEGORY.PROSE);
+});
+
+test('local session state is removable; rendered and hook-bearing records are not', () => {
+  for (const type of ['last-prompt', 'atis-latch', 'mode', 'custom-title', 'file-history-delta', 'file-history-snapshot', 'queue-operation']) {
+    const record = classify({ type, sessionId: 's' });
+    assert.equal(record.category, CATEGORY.LOCAL_ONLY, type);
+    assert.equal(applyPolicies([record]).size, 1, type);
+  }
+  for (const entry of [{ type: 'attachment', rendered: 'file contents the model saw' }, { type: 'system', hookAdditionalContext: 'recovery note' }]) {
+    const record = classify(entry);
+    assert.equal(record.category, CATEGORY.TOOL_OUTPUT, entry.type);
+    assert.equal(record.pinned, true, entry.type);
+    assert.ok(record.text.includes(entry.rendered ?? entry.hookAdditionalContext));
+    assert.equal(applyPolicies([record]).size, 0, entry.type);
+  }
+});
+
 test('redaction cannot corrupt code, literals, whitespace or intent', () => {
   const text = '  const ass = "shit"; // NOT fucking working\n\tassert(ass);\n';
   assert.equal(redact(text), text);

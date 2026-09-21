@@ -94,11 +94,18 @@ export function imageBytes(value) {
 }
 
 // Unknown fields can carry context even when the visible text is empty or repeated.
+// Harness bookkeeping that provably carries no content is listed instead, so a newer
+// client adding envelope keys cannot silently demote every assistant turn out of prose.
+// Error envelopes stay off both lists: their payload is content, and content stays protected.
+const ENTRY_KNOWN = ['type','uuid','parentUuid','timestamp','sessionId','version','cwd','userType','isSidechain','isMeta','requestId','message','gitBranch','isCompactSummary',
+  'apiBlockIndex','entrypoint','effort','perTurnEffort','slug','quotaLimits','attributionMcpServer','attributionMcpTool','attributionSkill'];
+const MESSAGE_KNOWN = ['id','type','role','model','content','stop_reason','stop_sequence','usage','container','stop_details','diagnostics','context_management'];
+
 export function isPlainAssistant(entry) {
   const known = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
   return entry.type === 'assistant' && !entry.isCompactSummary && !entry.isSidechain && !entry.isMeta &&
-    known(entry, ['type','uuid','parentUuid','timestamp','sessionId','version','cwd','userType','isSidechain','isMeta','requestId','message','gitBranch','isCompactSummary']) &&
-    known(entry.message, ['id','type','role','model','content','stop_reason','stop_sequence','usage']) &&
+    known(entry, ENTRY_KNOWN) &&
+    known(entry.message, MESSAGE_KNOWN) &&
     (entry.message.role == null || entry.message.role === 'assistant') &&
     (typeof entry.message.content === 'string' || Array.isArray(entry.message.content) && entry.message.content.every(block =>
       known(block, ['type','text']) && block.type === 'text' && typeof block.text === 'string'));
@@ -121,7 +128,9 @@ export function classify(entry, toolByUseId = new Map()) {
   // Summary protection is independent of role and content representation.
   if (entry.isCompactSummary) return { ...record, category: CATEGORY.COMPACT_SUMMARY, pinned: true };
   if (entry.type !== "assistant" && entry.type !== "user") {
-    const localTypes = new Set(["file-history-snapshot", "progress", "queue-operation"]);
+    // Session and UI state only. Types that render content (attachment, system) stay protected.
+    const localTypes = new Set(["file-history-snapshot", "file-history-delta", "progress", "queue-operation",
+      "last-prompt", "atis-latch", "mode", "custom-title"]);
     if (localTypes.has(entry.type) && !entry.message) return { ...base, category: CATEGORY.LOCAL_ONLY };
     return { ...record, category: CATEGORY.TOOL_OUTPUT, text: text || JSON.stringify(entry), pinned: true };
   }

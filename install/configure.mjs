@@ -74,10 +74,15 @@ for (const [event, entry] of Object.entries(entries)) {
 const owned = new Set(Object.values(entries).map(entry => entry.hooks[0].command));
 for (const [mode, script] of [['stop', 'on-stop.mjs'], ['precompact', 'on-precompact.mjs'], ['postcompact', 'on-postcompact.mjs'], ['sessionstart', 'on-sessionstart.mjs']]) {
   const dispatcher = join(ROOT, 'bin', 'trashcompact-hook');
-  const dispatchMode = target === 'claude' ? `claude-${mode}` : mode;
-  owned.add(`${quote(dispatcher)} ${dispatchMode}`);
-  owned.add(`${dispatcher} ${dispatchMode}`); // legacy unquoted installer
-  for (const path of [join(ROOT, 'hooks', target === 'claude' ? `claude-${script}` : script)]) {
+  // Claude also owns the bare modes and Codex-named scripts a previous installer generation
+  // wrote into ~/.claude/settings.json; unmigrated, they survive install and uninstall alike.
+  const dispatchModes = target === 'claude' ? [`claude-${mode}`, mode] : [mode];
+  const scripts = target === 'claude' ? [`claude-${script}`, script] : [script];
+  for (const dispatchMode of dispatchModes) {
+    owned.add(`${quote(dispatcher)} ${dispatchMode}`);
+    owned.add(`${dispatcher} ${dispatchMode}`); // legacy unquoted installer
+  }
+  for (const path of scripts.map(name => join(ROOT, 'hooks', name))) {
     owned.add(`node ${path}`);
     owned.add(`node ${quote(path)}`);
   }
@@ -105,12 +110,14 @@ if (!settings || typeof settings !== 'object' || Array.isArray(settings) ||
   throw new Error('Refusing invalid settings structure');
 }
 settings.hooks ??= {};
+let dropped = 0;
 for (const event of Object.keys(entries)) {
   const groups = settings.hooks[event] ?? [];
   if (!Array.isArray(groups)) throw new Error('Refusing invalid hook groups');
   const existing = groups.flatMap(group => {
     if (!Array.isArray(group?.hooks)) return [group];
     const hooks = group.hooks.filter(hook => !isOurs(hook));
+    dropped += group.hooks.length - hooks.length;
     if (hooks.length === group.hooks.length) return [group];
     return hooks.length ? [{ ...group, hooks }] : [];
   });
@@ -131,4 +138,5 @@ try {
   renameSync(staging, SETTINGS);
 } finally { rmSync(temporary, { recursive: true, force: true }); }
 
-console.log(`${remove ? 'removed' : 'wired'} ${target} ${Object.keys(entries).join(', ')} hooks${!remove && target === 'codex' ? '; review and trust them using /hooks' : ''}`);
+const verb = remove ? (dropped ? `removed ${dropped}` : 'found no') : `wired${dropped ? ` (replaced ${dropped} existing)` : ''}`;
+console.log(`${verb} ${target} ${Object.keys(entries).join(', ')} hooks${!remove && target === 'codex' ? '; review and trust them using /hooks' : ''}`);

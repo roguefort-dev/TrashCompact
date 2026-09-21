@@ -82,6 +82,34 @@ test('Claude install merges only owned hooks and leaves Codex unchanged', t => {
   assert.equal(f.run('configure.mjs', '--target', 'claude', '--remove').status, 0);
   assert.equal(JSON.parse(readFileSync(path)).hooks.Stop[0].hooks[0].command, 'echo existing');
 });
+test('Claude install migrates a previous installer generation instead of duplicating it', t => {
+  const f = fixture(t), path = join(f.home, '.claude/settings.json');
+  const dispatcher = `${f.repo}/bin/trashcompact-hook`;
+  const quoted = "'" + dispatcher.replaceAll("'", "'\"'\"'") + "'";
+  const unrelated = { type: 'command', command: 'echo existing' };
+  // What install.sh wrote before the claude-* dispatch modes existed: bare mode, unquoted path.
+  writeFileSync(path, JSON.stringify({ hooks: {
+    Stop: [{ hooks: [{ type: 'command', command: `${dispatcher} stop`, async: true, timeout: 120 }, unrelated] }],
+    PreCompact: [{ hooks: [{ type: 'command', command: `${dispatcher} precompact`, timeout: 30 }] }],
+  } }));
+  assert.equal(f.run('configure.mjs', '--target', 'claude').status, 0);
+  let value = JSON.parse(readFileSync(path));
+  const commands = event => value.hooks[event].flatMap(group => group.hooks.map(hook => hook.command));
+  assert.deepEqual(commands('Stop'), ['echo existing', `${quoted} claude-stop`]);
+  assert.deepEqual(commands('PreCompact'), [`${quoted} claude-precompact`]);
+  assert.equal(value.hooks.PreCompact[0].hooks[0].timeout, 65);
+
+  assert.equal(f.run('configure.mjs', '--target', 'claude').status, 0);
+  assert.deepEqual(JSON.parse(readFileSync(path)), value); // reinstall stays idempotent
+
+  // Uninstall reports what it actually removed, and removes the migrated entries too.
+  writeFileSync(path, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: `${dispatcher} stop` }, unrelated] }] } }));
+  const removal = f.run('configure.mjs', '--target', 'claude', '--remove');
+  assert.equal(removal.status, 0);
+  assert.match(removal.stdout, /^removed 1 claude /);
+  assert.deepEqual(JSON.parse(readFileSync(path)).hooks.Stop, [{ hooks: [unrelated] }]);
+  assert.match(f.run('configure.mjs', '--target', 'claude', '--remove').stdout, /^found no claude /);
+});
 test('target skill links are isolated and unsupported helper flags are rejected', t => {
   const f = fixture(t);
   assert.equal(f.run('skills.mjs', '--target', 'claude').status, 0);
