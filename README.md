@@ -25,7 +25,7 @@ Codex and OpenCode can send selected tool output to TypeSafe for scoring. Claude
 
 ## Ask your agent to install
 
-Copy the block for your application into its chat. Setup requires Node.js 20+, Git, npm, and a TypeSafe API key. Tested on Linux. Windows and macOS should work but remain untested. Please submit a [pull request](https://github.com/roguefort-dev/TrashCompact) with fixes if you encounter issues. On Windows, use PowerShell.
+Copy the block for your application into its chat. Setup requires Node.js 20+, Git, npm, and a TypeSafe API key. Full hook lifecycle tested on Linux. Codex installation, terminal CLI discovery, and the offline fixture check also verified on macOS; live macOS hook delivery and Windows remain unverified. Please submit a [pull request](https://github.com/roguefort-dev/TrashCompact) with fixes if you encounter issues. On Windows, use PowerShell.
 
 The prompts install the [TypeSafe agent skill](https://docs.typesafe.ai/agent-skill#installation) before TrashCompact.
 
@@ -38,8 +38,10 @@ First install the typesafe-ai agent skill globally for this application from htt
 ### Codex
 
 ```text
-First install the typesafe-ai agent skill globally for this application from https://github.com/typesafe-ai/skills, reusing an existing installation, and read its instructions. Then install https://github.com/roguefort-dev/TrashCompact.git at ~/.local/share/trashcompact for Codex. Follow docs/SETUP.md with target codex, preserving existing files and settings. I authorize the documented automatic TypeSafe scoring. Give me the absolute key-entry command to run privately and the terminal /hooks trust-review and restart steps. Never handle the key yourself.
+First install the typesafe-ai agent skill globally for this application from https://github.com/typesafe-ai/skills, reusing an existing installation, and read its instructions. Then install https://github.com/roguefort-dev/TrashCompact.git at ~/.local/share/trashcompact for Codex. Follow docs/SETUP.md with target codex, preserving existing files and settings. Complete the macOS terminal preflight when applicable: find the installed Codex CLI, safely make it available in my terminal if needed, and verify it from a fresh shell before handing me commands. I authorize the documented automatic TypeSafe scoring. Preserve an existing update-check preference; otherwise leave checks off without asking. Give me verified absolute commands for private key entry and launching the terminal CLI for /hooks, then the restart steps. Never handle the key yourself.
 ```
+
+This single request covers all agent-run setup, including macOS command-path repair. You still enter your key privately and approve hooks yourself. To opt into daily update checks on a new installation, add “Enable daily update checks” to the request.
 
 ### OpenCode and OpenCode 2
 
